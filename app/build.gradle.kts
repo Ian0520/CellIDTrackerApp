@@ -33,7 +33,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("CMakeLists.txt")   // 位於 app/CMakeLists.txt
-            version = "3.24.0"              // 你安裝到的 CMake 版本
+            version = "4.1.2"              // 你安裝到的 CMake 版本
         }
     }
 

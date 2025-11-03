@@ -5,6 +5,19 @@ include(cmake/CPM.cmake)
 
 CPMAddPackage(GITHUB_REPOSITORY abdes/cryptopp-cmake VERSION 8.8.0 GIT_SHALLOW TRUE OPTIONS "CRYPTOPP_BUILD_TESTING OFF")
 CPMAddPackage(NAME mbedtls GITHUB_REPOSITORY "ARMmbed/mbedtls" GIT_TAG "v3.1.0" OPTIONS "ENABLE_PROGRAMS OFF" "ENABLE_TESTING OFF")
+# --- Soften warnings for mbedTLS only ---
+foreach(_t mbedtls mbedcrypto mbedx509)
+  if (TARGET ${_t})
+    # 取消把所有警告當錯誤
+    target_compile_options(${_t} PRIVATE -Wno-error)
+    # 針對這次報的特定警告，確保不升級成錯誤
+    target_compile_options(${_t} PRIVATE -Wno-error=unused-but-set-variable)
+  endif()
+endforeach()
+set(MBEDTLS_INCLUDE_DIRS  ${mbedtls_SOURCE_DIR}/include         CACHE STRING "")
+set(MBEDTLS_LIBRARY       mbedtls                               CACHE STRING "")
+set(MBEDX509_LIBRARY      mbedx509                              CACHE STRING "")
+set(MBEDCRYPTO_LIBRARY    mbedcrypto                            CACHE STRING "")
 set(CURL_COMMON_OPTIONS
   "CMAKE_USE_LIBSSH2 OFF" "CURL_USE_MBEDTLS ON" "CMAKE_USE_OPENSSL OFF"
   "BUILD_CURL_EXE OFF" "BUILD_SHARED_LIBS OFF" "BUILD_TESTING OFF"
