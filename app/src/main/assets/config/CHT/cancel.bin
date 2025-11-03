@@ -1,0 +1,15 @@
+CANCEL sip:<CALLEE_ID>;phone-context=ims.mnc092.mcc466.3gppnetwork.org@ims.mnc092.mcc466.3gppnetwork.org;user=phone SIP/2.0
+Via: SIP/2.0/TCP <LOCAL_IP>:7700;branch=z9hG4bK-<BRANCH_ID>;rport;transport=TCP
+Max-Forwards: 70
+Route: <sip:<REMOTE_IP>:7777;lr>
+Route: <sip:<REMOTE_IP>:7777;transport=tcp;lr>
+To: <sip:<CALLEE_ID>;phone-context=ims.mnc092.mcc466.3gppnetwork.org@ims.mnc092.mcc466.3gppnetwork.org;user=phone>
+From: <sip:<CALLER_ID>@ims.mnc092.mcc466.3gppnetwork.org>;tag=<FROM_TAG>
+Call-ID: <CALL_ID>..@<LOCAL_IP>
+CSeq: 1 CANCEL
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Supported: sec-agree
+User-Agent: Samsung IMS 6.0 G950FXXU3CRGH
+Security-Verify: ipsec-3gpp;q=0.5;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c=2359252967;spi-s=3981454521;port-c=7807;port-s=7777
+P-Preferred-Identity: <sip:<CALLER_ID>@ims.mnc092.mcc466.3gppnetwork.org>
+Content-Length: 0

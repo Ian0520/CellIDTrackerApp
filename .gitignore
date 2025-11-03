@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/ venv/
+
+# Node
+node_modules/
+
+# Android/Gradle
+*.iml
+.gradle/
+local.properties
+*.keystore
+*.jks
+app/build/
+build/
+
+# IDE/OS
+.DS_Store
+.idea/
+.vscode/
