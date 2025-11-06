@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "random": "cpp",
+        "system_error": "cpp"
+    }
+}
