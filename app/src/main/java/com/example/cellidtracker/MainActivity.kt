@@ -17,6 +17,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -111,6 +116,21 @@ class MainActivity : ComponentActivity() {
                   if (carrier == "UNKNOWN") CarrierProbe.getCarrierNameOrUnknown(ctx) else carrier
 
                 val cfgJson = AssetConfig.dumpAllAsJson(ctx)
+                val cfgObj = JSONObject(cfgJson)
+                val cfgSummary = cfgObj.getJSONObject("summary")
+                val carriersObj = cfgObj.getJSONObject("carriers")
+
+                val carrierCount = cfgSummary.getInt("carrierCount")
+                val fileCount = cfgSummary.getInt("fileCount")
+                val carrierNames = carriersObj.keys().asSequence().toList()
+                val configSummaryPretty = buildString {
+                  append("profiles=")
+                  append(carrierCount)
+                  append(" [")
+                  append(carrierNames.joinToString(","))
+                  append("], files=")
+                  append(fileCount)
+                }
 
                 val raw = NativeBridge.runReportWithConfig(
                   input,
@@ -124,15 +144,24 @@ class MainActivity : ComponentActivity() {
                   val o = org.json.JSONObject(raw)
                   val wifi = o.getJSONObject("wifi")
                   val ims  = o.getJSONObject("ims")
+                  val imsGuess = ImsProbe.guessImsInfo(ctx)
+                    // 1) 先取出 ts (假設是 Unix epoch「秒」，如果你後來確認是毫秒，就改用 Instant.ofEpochMilli)
+                  val ts = o.getLong("ts")
+
+                  // 轉成 GMT+8（Asia/Taipei）時間字串
+                  val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                  val lastAssess = Instant.ofEpochSecond(ts)   // 若 ts 是毫秒，改成 Instant.ofEpochMilli(ts)
+                        .atZone(ZoneId.of("Asia/Taipei"))
+                        .format(formatter)
                   """
                   victim: ${o.getString("victim")}
                   carrier: ${o.getString("carrier")}
                   wifi.enabled: ${wifi.getBoolean("enabled")}
                   wifi.ssid: ${wifi.getString("ssid")}
-                  ims.registered: ${ims.getBoolean("registered")}
-                  ims.rat: ${ims.getString("rat")}
-                  ts: ${o.getLong("ts")}
-                  configSummary: ${o.optString("configSummary")}
+                  ims.registered: ${imsGuess.registered}
+                  ims.rat: ${imsGuess.rat}
+                  last assess (GMT+8): $lastAssess
+                  configSummary: $configSummaryPretty
                   """.trimIndent()
                 } catch (e: Exception) {
                   "parse error: ${e.message}\nraw=$raw"

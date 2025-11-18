@@ -93,7 +93,39 @@ Java_com_example_cellidtracker_NativeBridge_runReportWithConfig(
     return env->NewStringUTF(out.c_str());
 }
 
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_cellidtracker_NativeBridge_runOriginalFlow(
+        JNIEnv* env, jobject,
+        jstring jVictim, jstring jCarrier,
+        jboolean jRemote, jboolean jLocal, jboolean jRl,
+        jboolean jUnavail, jboolean jDetect,
+        jint jVerbose, jboolean jAllowSysOps) {
 
+    auto toStr = [&](jstring s) -> std::string {
+        const char *c = env->GetStringUTFChars(s, nullptr);
+        std::string out = c ? c : "";
+        if (c) env->ReleaseStringUTFChars(s, c);
+        return out;
+    };
+
+    std::string victim = toStr(jVictim);
+    std::string carrier = toStr(jCarrier);
+
+    std::string msg = "runOriginalFlow stub OK\n";
+    msg += "victim=" + victim + "\n";
+    msg += "carrier=" + carrier + "\n";
+    msg += "remote=" + std::string(jRemote == JNI_TRUE ? "true" : "false") + "\n";
+    msg += "local=" + std::string(jLocal == JNI_TRUE ? "true" : "false") + "\n";
+    msg += "rl=" + std::string(jRl == JNI_TRUE ? "true" : "false") + "\n";
+    msg += "unavail=" + std::string(jUnavail == JNI_TRUE ? "true" : "false") + "\n";
+    msg += "detect=" + std::string(jDetect == JNI_TRUE ? "true" : "false") + "\n";
+    msg += "verbose=" + std::to_string((int) jVerbose) + "\n";
+    msg += "allowSystemOps=" + std::string(jAllowSysOps == JNI_TRUE ? "true" : "false");
+
+    return env->NewStringUTF(msg.c_str());
+}
+/*
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_cellidtracker_NativeBridge_runOriginalFlow(
@@ -124,3 +156,4 @@ Java_com_example_cellidtracker_NativeBridge_runOriginalFlow(
   auto log = core_adapter::run_original_flow(p);
   return env->NewStringUTF(log.c_str());
 }
+*/
