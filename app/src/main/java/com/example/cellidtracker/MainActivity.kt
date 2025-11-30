@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
                                     onValueChange = { victimInput = it },
                                     label = { Text("Victim number / 任意文字") },
                                     modifier = Modifier.fillMaxWidth(),
-                                    supportingText = { Text("Replaces /data/local/tmp/config/CHT/victim_list with this number") }
+                                    supportingText = { Text("Replaces /data/local/tmp/victim_list with this number") }
                                 )
                                 Button(
                                     onClick = {
@@ -117,7 +117,7 @@ class MainActivity : ComponentActivity() {
                                             scope.launch { snackbarHostState.showSnackbar("請先輸入 victim number") }
                                         } else {
                                             scope.launch {
-                                                val path = "/data/local/tmp/config/CHT/victim_list"
+                                                val path = "/data/local/tmp/victim_list"
                                                 val appendCmd = "echo \"$victimNum\" > \"$path\""
                                                 val appendResult = withContext(Dispatchers.IO) {
                                                     RootShell.runAsRoot(appendCmd)
