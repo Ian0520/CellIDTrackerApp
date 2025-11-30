@@ -7,4 +7,8 @@
 ## 待補：
 1. 自動化CellID偵測->顯示位置
 2. 改用Google Maps
-3. 刪掉不必要功能、美化
+
+## How to run
+try to build 
+./gradlew :app:assembleDebug 
+./gradlew clean :app:installDebug 
