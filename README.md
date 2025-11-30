@@ -9,6 +9,7 @@
 2. 改用Google Maps
 
 ## How to run
-try to build 
-./gradlew :app:assembleDebug 
-./gradlew clean :app:installDebug 
+try to build   
+./gradlew :app:assembleDebug   
+to install  
+./gradlew clean :app:installDebug  
