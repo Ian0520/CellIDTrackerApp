@@ -1,12 +1,13 @@
 # CellIDTracker
+## About the app
+CellIDTracker is an Android app that drives a bundled (root-required) probe binary to discover cell IDs, looks up their location via Google Geolocation, and visualizes the result on an OpenStreetMap (osmdroid) map with an accuracy circle. Key features:
+- Set victim number (written to `victim_list` for the probe).
+- Run the probe (root) and live-parse MCC/MNC/LAC/CID from stdout.
+- Auto-query Google Geolocation and show lat/lon/accuracy on the map.
+- View recent probe history and tap an entry to restore its location on the map.
+- View the raw log stream inside the app.
 
-## 新增功能：
-1. Clean up UI
-## 待補：
-1. 自動化CellID偵測->顯示位置
-2. 改用Google Maps
-
-## How to run
+## How to build
 try to build   
 ./gradlew :app:assembleDebug   
 to install  
