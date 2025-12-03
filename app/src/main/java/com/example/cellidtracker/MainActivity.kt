@@ -39,6 +39,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 data class ParsedCellFromLog(
     val mcc: Int,
@@ -54,7 +57,8 @@ data class ProbeHistory(
     val cid: Int,
     val lat: Double?,
     val lon: Double?,
-    val accuracy: Double?
+    val accuracy: Double?,
+    val timestampMillis: Long
 )
 
 /** Try to extract mcc/mnc/lac/cellid from a stdout line. */
@@ -189,6 +193,9 @@ class MainActivity : ComponentActivity() {
                 var cellLocation by remember { mutableStateOf<CellLocationResult?>(null) }
                 var showLog by remember { mutableStateOf(false) }
                 val history = remember { mutableStateListOf<ProbeHistory>() }
+                val timeFormatter = remember {
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+                }
 
                 // Manual geolocation fallback
                 var mccInput by remember { mutableStateOf("") }
@@ -446,7 +453,19 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                     output += result.fold(
                                                                                         onSuccess = { loc ->
                                                                                             cellLocation = loc
-                                                                                            history.add(0, ProbeHistory(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, loc.lat, loc.lon, loc.range))
+                                                                                            history.add(
+                                                                                                0,
+                                                                                                ProbeHistory(
+                                                                                                    parsed.mcc,
+                                                                                                    parsed.mnc,
+                                                                                                    parsed.lac,
+                                                                                                    parsed.cid,
+                                                                                                    loc.lat,
+                                                                                                    loc.lon,
+                                                                                                    loc.range,
+                                                                                                    System.currentTimeMillis()
+                                                                                                )
+                                                                                            )
                                                                                             buildString {
                                                                                                 appendLine()
                                                                                                 appendLine("[Google Geolocation] success")
@@ -458,7 +477,19 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                         },
                                                                                         onFailure = { e ->
                                                                                             cellLocation = null
-                                                                                            history.add(0, ProbeHistory(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, null, null, null))
+                                                                                            history.add(
+                                                                                                0,
+                                                                                                ProbeHistory(
+                                                                                                    parsed.mcc,
+                                                                                                    parsed.mnc,
+                                                                                                    parsed.lac,
+                                                                                                    parsed.cid,
+                                                                                                    null,
+                                                                                                    null,
+                                                                                                    null,
+                                                                                                    System.currentTimeMillis()
+                                                                                                )
+                                                                                            )
                                                                                             "\n[Google Geolocation] 查詢失敗：${e.message ?: e.toString()}"
                                                                                         }
                                                                                     )
@@ -663,6 +694,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                             Text(
                                                                 "MCC=${item.mcc}, MNC=${item.mnc}, LAC=${item.lac}, CID=${item.cid}",
                                                                 style = MaterialTheme.typography.bodyMedium
+                                                            )
+                                                            Text(
+                                                                "Time: ${timeFormatter.format(Instant.ofEpochMilli(item.timestampMillis))}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )
                                                             if (item.lat != null && item.lon != null) {
                                                                 Text(
