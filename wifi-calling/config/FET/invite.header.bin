@@ -1,0 +1,27 @@
+INVITE sip:<CALLEE_ID>;phone-context=ims.mnc001.mcc466.3gppnetwork.org@ims.mnc001.mcc466.3gppnetwork.org;user=phone SIP/2.0
+Via: SIP/2.0/TCP <LOCAL_IP>:7500;branch=z9hG4bK-<BRANCH_ID>;rport;transport=TCP
+Max-Forwards: 70
+Route: <sip:<REMOTE_IP>:7777;lr>
+Route: <sip:<REMOTE_IP>:7777;transport=tcp;lr>
+Proxy-Require: sec-agree
+Require: sec-agree
+Require: 100rel
+Contact: <sip:<CALLER_ID>@<LOCAL_IP>:7500>;+sip.instance="<urn:gsma:imei:35213265-430611-0>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.mid-call;+g.3gpp.srvcc-alerting;+g.3gpp.ps2cs-srvcc-orig-pre-alerting
+To: <sip:<CALLEE_ID>;phone-context=ims.mnc001.mcc466.3gppnetwork.org@ims.mnc001.mcc466.3gppnetwork.org;user=phone>
+From: <sip:<CALLER_ID>@ims.mnc001.mcc466.3gppnetwork.org>;tag=<FROM_TAG>
+Call-ID: <CALL_ID>
+CSeq: 1 INVITE
+Session-Expires: 1800
+Accept: application/sdp, application/3gpp-ims+xml
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Content-Type: application/sdp
+Supported: timer, 100rel, precondition, sec-agree
+User-Agent: Samsung IMS 6.0 G9910ZHS2AUIN
+Security-Verify: ipsec-3gpp;q=0.5;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=aes-cbc;spi-c=1837809015;spi-s=1291622305;port-c=7807;port-s=7777
+Privacy: header
+P-Preferred-Identity: <sip:<CALLER_ID>@ims.mnc001.mcc466.3gppnetwork.org>
+Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
+P-Early-Media: supported
+P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
+P-Access-Network-Info: IEEE-802.11;country=TW;i-wlan-node-id=2cfda16039a8
+Content-Length: <CONTENT_LENGTH>

@@ -12,10 +12,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import android.graphics.Color
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Polygon
 
 /**
  * 用 OpenStreetMap (osmdroid) 畫地圖：
@@ -26,6 +28,7 @@ import org.osmdroid.views.MapView
 fun CellMapView(
     lat: Double?,
     lon: Double?,
+    accuracy: Double? = null,
     modifier: Modifier = Modifier
 ) {
     val ctx = LocalContext.current
@@ -37,6 +40,8 @@ fun CellMapView(
 
     // 記住 MapView，避免每次 recomposition 都重建
     var mapView by remember { mutableStateOf<MapView?>(null) }
+    // 記住覆蓋層，方便更新/移除
+    var accuracyOverlay by remember { mutableStateOf<Polygon?>(null) }
 
     AndroidView(
         modifier = modifier.fillMaxSize(),
@@ -58,9 +63,33 @@ fun CellMapView(
             // 每次 lat/lon 有改變就更新中心點
             if (lat != null && lon != null) {
                 val point = GeoPoint(lat, lon)
-                view.controller.setZoom(16.0)
+                // 調整縮放，確保精度圈可以落在可視範圍內
+                val zoom = when {
+                    accuracy != null && accuracy > 15000 -> 11.5
+                    accuracy != null && accuracy > 8000  -> 12.5
+                    accuracy != null && accuracy > 4000  -> 13.0
+                    accuracy != null && accuracy > 2000  -> 13.5
+                    accuracy != null && accuracy > 1000  -> 14.0
+                    accuracy != null && accuracy > 500   -> 14.5
+                    accuracy != null && accuracy > 200   -> 15.0
+                    else -> 16.0
+                }
+                view.controller.setZoom(zoom)
                 view.controller.setCenter(point)
-                // 如果之後你想加 marker，可以再擴充 overlay
+                // 畫精度圈
+                accuracyOverlay?.let { existing ->
+                    view.overlays.remove(existing)
+                }
+                if (accuracy != null && accuracy > 0) {
+                    val circle = Polygon(view)
+                    circle.points = Polygon.pointsAsCircle(point, accuracy)
+                    circle.fillColor = Color.argb(40, 0, 150, 255) // 淺藍半透明
+                    circle.strokeColor = Color.argb(120, 0, 120, 255)
+                    circle.strokeWidth = 2f
+                    view.overlays.add(circle)
+                    accuracyOverlay = circle
+                    view.invalidate()
+                }
             } else {
                 // 沒座標就維持預設：可以視需要移回台北
                 val defaultPoint = GeoPoint(25.033968, 121.564468)

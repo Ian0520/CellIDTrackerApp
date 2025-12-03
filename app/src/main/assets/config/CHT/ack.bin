@@ -1,0 +1,10 @@
+ACK sip:<CALLEE_ID>;phone-context=ims.mnc092.mcc466.3gppnetwork.org@ims.mnc092.mcc466.3gppnetwork.org;user=phone SIP/2.0
+Via: SIP/2.0/TCP <LOCAL_IP>:7700;branch=z9hG4bK-<BRANCH_ID>;rport;transport=TCP
+Max-Forwards: 70
+Route: <sip:<REMOTE_IP>:7777;lr>
+Route: <sip:<REMOTE_IP>:7777;transport=tcp;lr>
+To: <sip:<CALLEE_ID>;phone-context=ims.mnc092.mcc466.3gppnetwork.org@ims.mnc092.mcc466.3gppnetwork.org;user=phone>;tag=<TO_TAG>
+From: <sip:<CALLER_ID>@ims.mnc092.mcc466.3gppnetwork.org>;tag=<FROM_TAG>
+Call-ID: <CALL_ID>..@<LOCAL_IP>
+CSeq: 1 ACK
+Content-Length: 0

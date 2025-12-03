@@ -1,0 +1,28 @@
+INVITE sip:<CALLEE_ID>;phone-context=ims.taiwanmobile.com@ims.taiwanmobile.com;user=phone SIP/2.0
+Via: SIP/2.0/TCP [<LOCAL_IP>]:<PORT>;branch=z9hG4bK-<BRANCH_ID>;rport;transport=TCP
+Max-Forwards: 70
+Route: <sip:[<REMOTE_IP>]:5067;lr>
+Route: <sip:[<REMOTE_IP>]:5067;lr;bidx=0>
+Route: <sip:originating@vscscfw01.ims.taiwanmobile.com:5090;reg-id=O751672571699316861;lskpmc=SO75;lr;ms_rest_id=SO763b16b32>
+Proxy-Require: sec-agree
+Require: sec-agree
+Require: 100rel
+Contact: <sip:<CALLER_ID>@[<LOCAL_IP>]:<PORT>>;+sip.instance="<urn:gsma:imei:35213265-430611-0>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
+To: <sip:<CALLEE_ID>;phone-context=ims.taiwanmobile.com@ims.taiwanmobile.com;user=phone>
+From: <sip:<CALLER_ID>@ims.taiwanmobile.com>;tag=<FROM_TAG>
+Call-ID: <CALL_ID>..@<LOCAL_IP>
+CSeq: 1 INVITE
+Session-Expires: 1800
+Accept: application/sdp, application/3gpp-ims+xml
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Content-Type: application/sdp
+Supported: timer, 100rel, precondition, sec-agree
+User-Agent: Samsung IMS 6.0 G9910ZHS2AUIN
+Security-Verify:<SEC_VERIFY>
+Privacy: header
+P-Preferred-Identity: <sip:<CALLER_ID>@ims.taiwanmobile.com>
+Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
+P-Early-Media: supported
+P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
+P-Access-Network-Info: IEEE-802.11;i-wlan-node-id=2cfda16039a8
+Content-Length: <CONTENT_LENGTH>
