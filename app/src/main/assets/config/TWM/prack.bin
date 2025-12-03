@@ -1,0 +1,18 @@
+PRACK sip:[<REMOTE_IP>]:5067;x-afi=<CONTACT_PARAM> SIP/2.0
+Via: SIP/2.0/UDP [<LOCAL_IP>]:<PORT>;branch=z9hG4bK-<BRANCH_ID>;rport;transport=UDP
+Max-Forwards: 70
+Route: <sip:[<REMOTE_IP>]:5067;lr;b2bdlg=<B2BDLG>>
+Proxy-Require: sec-agree
+Require: sec-agree
+To: <sip:<CALLEE_ID>;phone-context=ims.taiwanmobile.com@ims.taiwanmobile.com;user=phone>;tag=<TO_TAG>
+From: <sip:<CALLER_ID>@ims.taiwanmobile.com>;tag=<FROM_TAG>
+Call-ID: <CALL_ID>..@<LOCAL_IP>
+CSeq: 2 PRACK
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Supported: sec-agree
+User-Agent: Samsung IMS 6.0 G9910ZHS2AUIN
+Security-Verify:<SEC_VERIFY>
+RAck: 1 1 INVITE
+P-Preferred-Identity: <sip:<CALLER_ID>@ims.taiwanmobile.com>
+P-Access-Network-Info: IEEE-802.11;i-wlan-node-id=2cfda16039a8
+Content-Length: 0

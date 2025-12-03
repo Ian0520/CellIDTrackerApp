@@ -6,6 +6,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 
 // 你原本用在地圖上的資料 class
@@ -45,18 +47,18 @@ object GoogleGeolocationClient {
             // 建 request JSON
             val root = JSONObject().apply {
                 put("considerIp", false)
-                put("cellTowers", listOf(
-                    JSONObject().apply {
+                put("cellTowers", JSONArray().apply {
+                    put(JSONObject().apply {
                         put("mobileCountryCode", mcc)
                         put("mobileNetworkCode", mnc)
                         put("locationAreaCode", lac)
                         put("cellId", cellId)
                         put("radioType", radioType)
-                    }
-                ))
+                    })
+                })
             }
-
-            val body = RequestBody.create(JSON_MEDIA_TYPE, root.toString())
+            val requestJson = root.toString()
+            val body: RequestBody = requestJson.toRequestBody(JSON_MEDIA_TYPE)
 
             val req = Request.Builder()
                 .url(url)
@@ -64,13 +66,13 @@ object GoogleGeolocationClient {
                 .build()
 
             client.newCall(req).execute().use { resp ->
+                val respStr = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
                     return@withContext Result.failure(
-                        RuntimeException("HTTP ${resp.code} ${resp.message}")
+                        RuntimeException("HTTP ${resp.code} ${resp.message} body=$respStr request=$requestJson")
                     )
                 }
 
-                val respStr = resp.body?.string() ?: "{}"
                 val obj = JSONObject(respStr)
 
                 if (!obj.has("location")) {

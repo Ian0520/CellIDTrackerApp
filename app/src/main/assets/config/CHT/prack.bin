@@ -1,0 +1,18 @@
+PRACK sip:sgc_c@<REMOTE_IP>:7777;transport=tcp SIP/2.0
+Via: SIP/2.0/UDP <LOCAL_IP>:7700;branch=z9hG4bK-<BRANCH_ID>;rport;transport=UDP
+Max-Forwards: 70
+Route: <sip:<REMOTE_IP>:7777;transport=tcp;lr>
+Proxy-Require: sec-agree
+Require: sec-agree
+To: <sip:<CALLEE_ID>;phone-context=ims.mnc092.mcc466.3gppnetwork.org@ims.mnc092.mcc466.3gppnetwork.org;user=phone>;tag=<TO_TAG>
+From: <sip:<CALLER_ID>@ims.mnc092.mcc466.3gppnetwork.org>;tag=<FROM_TAG>
+Call-ID: <CALL_ID>..@<LOCAL_IP>
+CSeq: 2 PRACK
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Supported: sec-agree
+User-Agent: Samsung IMS 6.0 G950FXXU3CRGH
+Security-Verify: ipsec-3gpp;q=0.5;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c=2359252967;spi-s=3981454521;port-c=7807;port-s=7777
+RAck: 2 1 INVITE
+P-Preferred-Identity: <sip:<CALLER_ID>@ims.mnc092.mcc466.3gppnetwork.org>
+P-Access-Network-Info: IEEE-802.11;i-wlan-node-id=d46e0e65a897
+Content-Length: 0

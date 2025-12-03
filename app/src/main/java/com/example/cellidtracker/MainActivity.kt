@@ -4,19 +4,38 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import android.os.Build
+import java.nio.file.Files
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
 
 data class ParsedCellFromLog(
     val mcc: Int,
@@ -30,17 +49,17 @@ private fun tryParseCellFromStdoutLine(
     line: String,
     acc: MutableMap<String, Int>
 ): ParsedCellFromLog? {
-    val parts = line.split(':', limit = 2)
-    if (parts.size != 2) return null
-
-    val key = parts[0].trim().lowercase()
-    val value = parts[1].trim().toIntOrNull() ?: return null
-
-    when (key) {
-        "mcc" -> acc["mcc"] = value
-        "mnc" -> acc["mnc"] = value
-        "lac" -> acc["lac"] = value
-        "cellid" -> acc["cellid"] = value
+    // Support formats like "cellId: 123", "cid:123", possibly prefixed text.
+    val regex = Regex("(mcc|mnc|lac|cellid|cid)\\s*[:=]\\s*(\\d+)", RegexOption.IGNORE_CASE)
+    regex.findAll(line).forEach { match ->
+        val key = match.groupValues[1].lowercase()
+        val value = match.groupValues[2].toIntOrNull() ?: return@forEach
+        when (key) {
+            "mcc" -> acc["mcc"] = value
+            "mnc" -> acc["mnc"] = value
+            "lac" -> acc["lac"] = value
+            "cellid", "cid" -> acc["cellid"] = value
+        }
     }
 
     val mcc = acc["mcc"]
@@ -55,6 +74,87 @@ private fun tryParseCellFromStdoutLine(
     }
 }
 
+private data class ProbeAssets(
+    val workDir: File,
+    val bin: File,
+    val configDir: File
+)
+
+/** Copy bundled probe binary + config assets into app-private storage and return their paths. */
+private fun ensureProbeAssets(ctx: android.content.Context): ProbeAssets {
+    val workDir = ctx.filesDir
+    val configDir = File(workDir, "config")
+    val probeDir = File(workDir, "probe")
+
+    fun assetExists(path: String): Boolean =
+        try {
+            ctx.assets.open(path).close()
+            true
+        } catch (_: IOException) {
+            false
+        }
+
+    val abi = (Build.SUPPORTED_ABIS.toList() + listOf("arm64-v8a", "armeabi-v7a"))
+        .firstOrNull { assetExists("probe/$it/spoof") }
+        ?: throw IllegalStateException("No bundled probe binary found for any ABI.")
+
+    val binDest = File(probeDir, "spoof")
+
+    fun copyAssetToFile(assetPath: String, dest: File) {
+        dest.parentFile?.mkdirs()
+        ctx.assets.open(assetPath).use { input ->
+            dest.outputStream().use { input.copyTo(it) }
+        }
+    }
+
+    fun copyAssetDir(assetPath: String, destDir: File) {
+        destDir.mkdirs()
+        val children = ctx.assets.list(assetPath) ?: return
+        if (children.isEmpty()) return
+        for (child in children) {
+            val childPath = "$assetPath/$child"
+            val possibleDir = ctx.assets.list(childPath)
+            if (possibleDir?.isNotEmpty() == true) {
+                copyAssetDir(childPath, File(destDir, child))
+            } else {
+                copyAssetToFile(childPath, File(destDir, child))
+            }
+        }
+    }
+
+    // Copy probe binary if missing
+    if (!binDest.exists() || binDest.length() == 0L) {
+        val assetPath = "probe/$abi/spoof"
+        copyAssetToFile(assetPath, binDest)
+        binDest.setExecutable(true, true)
+    }
+
+    // Copy configs (if bundled)
+    if (!configDir.exists() || configDir.listFiles().isNullOrEmpty()) {
+        copyAssetDir("config", configDir)
+    }
+
+    // Ensure victim_list exists in workDir (probe runs from here)
+    val rootVictim = File(workDir, "victim_list")
+    if (!rootVictim.exists()) {
+        rootVictim.parentFile?.mkdirs()
+        runCatching { rootVictim.writeText("") }
+    }
+    // Point config victim_list at the same content (symlink if possible, else copy)
+    val configVictim = File(configDir, "CHT/victim_list")
+    configVictim.parentFile?.mkdirs()
+    runCatching {
+        Files.deleteIfExists(configVictim.toPath())
+        Files.createSymbolicLink(configVictim.toPath(), rootVictim.toPath())
+    }.getOrElse {
+        // Fallback: copy current root content
+        runCatching { configVictim.writeText(rootVictim.readText()) }
+    }
+
+    return ProbeAssets(workDir = workDir, bin = binDest, configDir = configDir)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,6 +165,7 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val scrollStateMain = rememberScrollState()
                 val scrollStateSecondary = rememberScrollState()
+                val ctx = LocalContext.current
                 var selectedTab by remember { mutableStateOf(0) } // 0 = probe, 1 = manual/log
 
                 var victimInput by remember { mutableStateOf("") }
@@ -131,46 +232,71 @@ class MainActivity : ComponentActivity() {
                                         Button(
                                             onClick = {
                                                 val victimNum = victimInput.trim()
-                                                if (victimNum.isEmpty()) {
-                                                    output = "請先在上方輸入 victim number 再新增到 victim_list"
-                                                    scope.launch { snackbarHostState.showSnackbar("請先輸入 victim number") }
-                                                } else {
-                                                    scope.launch {
-                                                        val path = "/data/local/tmp/victim_list"
-                                                        val appendCmd = "echo \"$victimNum\" > \"$path\""
-                                                        val appendResult = withContext(Dispatchers.IO) {
-                                                            RootShell.runAsRoot(appendCmd)
+                                        if (victimNum.isEmpty()) {
+                                            output = "請先在上方輸入 victim number 再新增到 victim_list"
+                                            scope.launch { snackbarHostState.showSnackbar("請先輸入 victim number") }
+                                        } else {
+                                            scope.launch {
+                                                try {
+                                                    val assets = withContext(Dispatchers.IO) {
+                                                        runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
+                                                            throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                         }
-
-                                                        val catCmd = "cat \"$path\""
-                                                        val catResult = withContext(Dispatchers.IO) {
-                                                            RootShell.runAsRoot(catCmd)
-                                                        }
-
-                                                        output = buildString {
-                                                            appendLine("Append command:")
-                                                            appendLine(appendCmd)
-                                                            appendLine("Exit code: ${appendResult.exitCode}")
-                                                            appendLine()
-                                                            appendLine("----- victim_list (after append) -----")
-                                                            appendLine(catResult.stdout.ifBlank { "(empty)" })
-                                                            appendLine()
-                                                            appendLine("----- STDERR (append) -----")
-                                                            appendLine(appendResult.stderr.ifBlank { "(empty)" })
-                                                            appendLine()
-                                                            appendLine("----- STDERR (cat) -----")
-                                                            appendLine(catResult.stderr.ifBlank { "(empty)" })
-                                                        }
-
-                                                        val msg = if (appendResult.exitCode == 0) {
-                                                            "已更新 victim_list"
-                                                        } else {
-                                                            "更新失敗，exit=${appendResult.exitCode}"
-                                                        }
-                                                        snackbarHostState.showSnackbar(msg)
                                                     }
+                                                    val rootVictim = File(assets.workDir, "victim_list")
+                                                    val configVictim = File(assets.configDir, "CHT/victim_list")
+                                                    configVictim.parentFile?.mkdirs()
+                                                    val appendCmd = buildString {
+                                                        append("echo \"$victimNum\" > \"${rootVictim.absolutePath}\"; ")
+                                                        append("echo \"$victimNum\" > \"${configVictim.absolutePath}\"")
+                                                    }
+                                                    val appendResult = withContext(Dispatchers.IO) {
+                                                        RootShell.runAsRoot(appendCmd)
+                                                    }
+
+                                                    val catCmdRoot = "cat \"${rootVictim.absolutePath}\""
+                                                    val catRootResult = withContext(Dispatchers.IO) {
+                                                        RootShell.runAsRoot(catCmdRoot)
+                                                    }
+                                                    val catCmdConfig = "cat \"${configVictim.absolutePath}\""
+                                                    val catConfigResult = withContext(Dispatchers.IO) {
+                                                        RootShell.runAsRoot(catCmdConfig)
+                                                    }
+
+                                                    output = buildString {
+                                                        appendLine("Append command:")
+                                                        appendLine(appendCmd)
+                                                        appendLine("Exit code: ${appendResult.exitCode}")
+                                                        appendLine()
+                                                        appendLine("----- victim_list (workDir) -----")
+                                                        appendLine(catRootResult.stdout.ifBlank { "(empty)" })
+                                                        appendLine()
+                                                        appendLine("----- config/CHT/victim_list -----")
+                                                        appendLine(catConfigResult.stdout.ifBlank { "(empty)" })
+                                                        appendLine()
+                                                        appendLine("----- STDERR (append) -----")
+                                                        appendLine(appendResult.stderr.ifBlank { "(empty)" })
+                                                        appendLine()
+                                                        appendLine("----- STDERR (cat workDir) -----")
+                                                        appendLine(catRootResult.stderr.ifBlank { "(empty)" })
+                                                        appendLine()
+                                                        appendLine("----- STDERR (cat config) -----")
+                                                        appendLine(catConfigResult.stderr.ifBlank { "(empty)" })
+                                                    }
+
+                                                    val msg = if (appendResult.exitCode == 0) {
+                                                        "已更新 victim_list"
+                                                    } else {
+                                                        "更新失敗，exit=${appendResult.exitCode}"
+                                                    }
+                                                    snackbarHostState.showSnackbar(msg)
+                                                } catch (e: Exception) {
+                                                    output = "Set victim failed: ${e.message ?: e}"
+                                                    snackbarHostState.showSnackbar("Set victim failed: ${e.message ?: e}")
                                                 }
-                                            },
+                                            }
+                                        }
+                                    },
                                             modifier = Modifier.fillMaxWidth()
                                         ) { Text("Set victim number") }
                                     }
@@ -198,26 +324,44 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
 
-                    if (mccInput.isNotBlank() || mncInput.isNotBlank() || lacInput.isNotBlank() || cidInput.isNotBlank()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Latest cell", style = MaterialTheme.typography.labelLarge)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                SmallInfoChip("MCC", mccInput)
-                                SmallInfoChip("MNC", mncInput)
-                                SmallInfoChip("LAC", lacInput)
-                                SmallInfoChip("CID", cidInput)
-                            }
-                        }
-                    } else {
-                        Text(
-                            "No cell parsed yet. Press Probe to start.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text("Latest probed result", style = MaterialTheme.typography.labelLarge)
+                                            if (mccInput.isNotBlank() || mncInput.isNotBlank() || lacInput.isNotBlank() || cidInput.isNotBlank()) {
+                                                FlowRow(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    SmallInfoChip("MCC", mccInput)
+                                                    SmallInfoChip("MNC", mncInput)
+                                                    SmallInfoChip("LAC", lacInput)
+                                                    SmallInfoChip("CID", cidInput)
+                                                }
+                                                val loc = cellLocation
+                                                if (loc != null) {
+                                                    Text(
+                                                        buildString {
+                                                            append("Location: lat=${loc.lat}, lon=${loc.lon}")
+                                                            if (loc.range != null) append(" · accuracy=${loc.range} m")
+                                                        },
+                                                        style = MaterialTheme.typography.bodyMedium
+                                                    )
+                                                } else {
+                                                    Text(
+                                                        "Location not available yet.",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            } else {
+                                                Text(
+                                                    "No cell parsed yet. Press Probe to start.",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
 
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
@@ -231,7 +375,12 @@ class MainActivity : ComponentActivity() {
 
                                                     scope.launch {
                                                         try {
-                                                            val cmd = "cd /data/local/tmp && ./spoof -r -d --verbose 1"
+                                                            val assets = withContext(Dispatchers.IO) {
+                                                                runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
+                                                                    throw IOException("Bundled probe binary/config not found: ${e.message}")
+                                                                }
+                                                            }
+                                                            val cmd = "cd ${assets.workDir.absolutePath} && ./probe/spoof -r -d --verbose 1"
                                                             val accumulator = mutableMapOf<String, Int>()
 
                                                             output = buildString {
@@ -242,79 +391,82 @@ class MainActivity : ComponentActivity() {
                                                                 appendLine("----- STDOUT (stream) -----")
                                                             }
 
-                                                            val exitCode = withContext(Dispatchers.IO) {
-                                                                RootShell.runAsRootStreaming(
-                                                                    command = cmd,
-                                                                    onStdoutLine = { line ->
-                                                                        output += "\n$line"
+                                                    val exitCode = withContext(Dispatchers.IO) {
+                                                        RootShell.runAsRootStreaming(
+                                                            command = cmd,
+                                                            onStdoutLine = { line ->
+                                                                output += "\n$line"
 
-                                                                        val parsed = tryParseCellFromStdoutLine(line, accumulator)
-                                                                        if (parsed != null && parsed.cid != lastQueriedCid) {
-                                                                            lastQueriedCid = parsed.cid
-                                                                            mccInput = parsed.mcc.toString()
-                                                                            mncInput = parsed.mnc.toString()
-                                                                            lacInput = parsed.lac.toString()
-                                                                            cidInput = parsed.cid.toString()
+                                                                val parsed = tryParseCellFromStdoutLine(line, accumulator)
+                                                                if (parsed != null && parsed.cid != lastQueriedCid) {
+                                                                    lastQueriedCid = parsed.cid
+                                                                    mccInput = parsed.mcc.toString()
+                                                                    mncInput = parsed.mnc.toString()
+                                                                    lacInput = parsed.lac.toString()
+                                                                    cidInput = parsed.cid.toString()
 
-                                                                            scope.launch {
-                                                                                output += """
+                                                                    scope.launch {
+                                                                        output += """
 
 [Geo] querying Google Geolocation...
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 """.trimIndent()
 
-                                                                                val result = withContext(Dispatchers.IO) {
-                                                                                    GoogleGeolocationClient.queryByCell(
-                                                                                        mcc = parsed.mcc,
-                                                                                        mnc = parsed.mnc,
-                                                                                        lac = parsed.lac,
-                                                                                        cellId = parsed.cid,
-                                                                                        radioType = "lte"
-                                                                                    )
-                                                                                }
-
-                                                                                output += result.fold(
-                                                                                    onSuccess = { loc ->
-                                                                                        cellLocation = loc
-                                                                                        buildString {
-                                                                                            appendLine()
-                                                                                            appendLine("[Google Geolocation] success")
-                                                                                            appendLine("lat=${loc.lat}, lon=${loc.lon}")
-                                                                                            if (loc.range != null) {
-                                                                                                appendLine("accuracy=${loc.range} m")
-                                                                                            }
-                                                                                        }
-                                                                                    },
-                                                                                    onFailure = { e ->
-                                                                                        cellLocation = null
-                                                                                        "\n[Google Geolocation] 查詢失敗：${e.message ?: e.toString()}"
-                                                                                    }
-                                                                                )
-                                                                            }
+                                                                        val result = withContext(Dispatchers.IO) {
+                                                                            GoogleGeolocationClient.queryByCell(
+                                                                                mcc = parsed.mcc,
+                                                                                mnc = parsed.mnc,
+                                                                                lac = parsed.lac,
+                                                                                cellId = parsed.cid,
+                                                                                radioType = "lte"
+                                                                            )
                                                                         }
-                                                                    },
-                                                                    onStderrLine = { line ->
-                                                                        output += "\n[ERR] $line"
+
+                                                                        output += result.fold(
+                                                                            onSuccess = { loc ->
+                                                                                cellLocation = loc
+                                                                                buildString {
+                                                                                    appendLine()
+                                                                                    appendLine("[Google Geolocation] success")
+                                                                                    appendLine("lat=${loc.lat}, lon=${loc.lon}")
+                                                                                    if (loc.range != null) {
+                                                                                        appendLine("accuracy=${loc.range} m")
+                                                                                    }
+                                                                                }
+                                                                            },
+                                                                            onFailure = { e ->
+                                                                                cellLocation = null
+                                                                                "\n[Google Geolocation] 查詢失敗：${e.message ?: e.toString()}"
+                                                                            }
+                                                                        )
                                                                     }
-                                                                )
-                                                            }
-
-                                                            output += buildString {
-                                                                appendLine()
-                                                                appendLine()
-                                                                appendLine("----- PROCESS DONE -----")
-                                                                appendLine("Exit code: $exitCode")
-                                                                if (userStopRequested) {
-                                                                    appendLine("(Stopped by user)")
                                                                 }
+                                                            },
+                                                            onStderrLine = { line ->
+                                                                output += "\n[ERR] $line"
                                                             }
+                                                        )
+                                                    }
 
-                                                            snackbarHostState.showSnackbar("Probe finished (exit $exitCode)")
-                                                        } finally {
-                                                            isRootRunning = false
+                                                    output += buildString {
+                                                        appendLine()
+                                                        appendLine()
+                                                        appendLine("----- PROCESS DONE -----")
+                                                        appendLine("Exit code: $exitCode")
+                                                        if (userStopRequested) {
+                                                            appendLine("(Stopped by user)")
                                                         }
                                                     }
-                                                },
+
+                                                    snackbarHostState.showSnackbar("Probe finished (exit $exitCode)")
+                                                } catch (e: Exception) {
+                                                    output = "Probe failed: ${e.message ?: e}"
+                                                    snackbarHostState.showSnackbar("Probe failed: ${e.message ?: e}")
+                                                } finally {
+                                                    isRootRunning = false
+                                                }
+                                            }
+                                        },
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .height(48.dp),
@@ -362,129 +514,26 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(300.dp)
-                                                .clip(MaterialTheme.shapes.medium)
-                                        ) {
-                                            CellMapView(
-                                                lat = loc?.lat,
-                                                lon = loc?.lon
-                                            )
-                                        }
-                                    }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(300.dp)
+                                        .clip(MaterialTheme.shapes.medium)
+                                ) {
+                                    CellMapView(
+                                        lat = loc?.lat,
+                                        lon = loc?.lon,
+                                        accuracy = loc?.range
+                                    )
                                 }
+                            }
+                        }
                             }
                         } else {
                             Column(
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                                 modifier = Modifier.verticalScroll(scrollStateSecondary)
                             ) {
-                                // Manual lookup card
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = MaterialTheme.shapes.medium,
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    )
-                                ) {
-                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        Text("Manual lookup", style = MaterialTheme.typography.titleMedium)
-                                        Text(
-                                            "輸入 MCC/MNC/LAC/Cell ID 後可直接查詢 Google Geolocation。",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            OutlinedTextField(
-                                                value = mccInput,
-                                                onValueChange = { mccInput = it },
-                                                label = { Text("MCC") },
-                                                modifier = Modifier.weight(1f),
-                                                placeholder = { Text("466") }
-                                            )
-                                            OutlinedTextField(
-                                                value = mncInput,
-                                                onValueChange = { mncInput = it },
-                                                label = { Text("MNC") },
-                                                modifier = Modifier.weight(1f),
-                                                placeholder = { Text("92") }
-                                            )
-                                        }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            OutlinedTextField(
-                                                value = lacInput,
-                                                onValueChange = { lacInput = it },
-                                                label = { Text("LAC / TAC") },
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            OutlinedTextField(
-                                                value = cidInput,
-                                                onValueChange = { cidInput = it },
-                                                label = { Text("Cell ID") },
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                        Button(
-                                            onClick = {
-                                                val mcc = mccInput.trim().toIntOrNull()
-                                                val mnc = mncInput.trim().toIntOrNull()
-                                                val lac = lacInput.trim().toIntOrNull()
-                                                val cid = cidInput.trim().toIntOrNull()
-
-                                                if (mcc == null || mnc == null || lac == null || cid == null) {
-                                                    output = "MCC/MNC/LAC/Cell ID 必須都是整數（十進位）。"
-                                                    cellLocation = null
-                                                    scope.launch { snackbarHostState.showSnackbar("請填寫有效的整數參數") }
-                                                } else {
-                                                    scope.launch {
-                                                        output = buildString {
-                                                            appendLine("查詢 Google Geolocation 中...")
-                                                            appendLine("mcc=$mcc, mnc=$mnc, lac=$lac, cellId=$cid")
-                                                        }
-
-                                                        val result = withContext(Dispatchers.IO) {
-                                                            GoogleGeolocationClient.queryByCell(
-                                                                mcc = mcc,
-                                                                mnc = mnc,
-                                                                lac = lac,
-                                                                cellId = cid,
-                                                                radioType = "lte"
-                                                            )
-                                                        }
-
-                                                        output = result.fold(
-                                                            onSuccess = { loc ->
-                                                                cellLocation = loc
-                                                                buildString {
-                                                                    appendLine("Google Geolocation 查詢成功：")
-                                                                    appendLine("lat=${loc.lat}, lon=${loc.lon}")
-                                                                    if (loc.range != null) {
-                                                                        appendLine("accuracy=${loc.range} m")
-                                                                    }
-                                                                }
-                                                            },
-                                                            onFailure = { e ->
-                                                                cellLocation = null
-                                                                "Google Geolocation 查詢失敗：${e.message ?: e.toString()}"
-                                                            }
-                                                        )
-                                                        snackbarHostState.showSnackbar("Manual geolocation 查詢完成")
-                                                    }
-                                                }
-                                            },
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) { Text("用 OpenCellID 查 Cell 位置") }
-                                    }
-                                }
-
                                 // Log card
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
