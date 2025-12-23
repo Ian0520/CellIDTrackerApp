@@ -141,12 +141,11 @@ private fun ensureProbeAssets(ctx: android.content.Context): ProbeAssets {
         }
     }
 
-    // Copy probe binary if missing
-    if (!binDest.exists() || binDest.length() == 0L) {
-        val assetPath = "probe/$abi/spoof"
-        copyAssetToFile(assetPath, binDest)
-        binDest.setExecutable(true, true)
-    }
+    // Always refresh probe binary from assets to ensure latest build is used
+    runCatching { binDest.delete() }
+    val assetPath = "probe/$abi/spoof"
+    copyAssetToFile(assetPath, binDest)
+    binDest.setExecutable(true, true)
 
     // Copy configs (if bundled)
     if (!configDir.exists() || configDir.listFiles().isNullOrEmpty()) {
@@ -191,8 +190,10 @@ class MainActivity : ComponentActivity() {
                 var victimInput by remember { mutableStateOf("") }
                 var output by remember { mutableStateOf("Log will appear here.") }
                 var isRootRunning by remember { mutableStateOf(false) }
+                var isIntercarrierRunning by remember { mutableStateOf(false) }
                 var userStopRequested by remember { mutableStateOf(false) }
                 var cellLocation by remember { mutableStateOf<CellLocationResult?>(null) }
+                var intercarrierStatus by remember { mutableStateOf("Inter-carrier: unknown") }
                 var showLog by remember { mutableStateOf(false) }
                 val history = remember { mutableStateListOf<ProbeHistory>() }
                 val timeFormatter = remember {
@@ -372,6 +373,11 @@ class MainActivity : ComponentActivity() {
                                                         SmallInfoChip("LAC", lacInput)
                                                         SmallInfoChip("CID", cidInput)
                                                     }
+                                                    Text(
+                                                        intercarrierStatus,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
                                                     val loc = cellLocation
                                                     if (loc != null) {
                                                         Text(
@@ -395,17 +401,22 @@ class MainActivity : ComponentActivity() {
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
                                                 }
+                                                Text(
+                                                    intercarrierStatus,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
                                             }
 
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                Button(
-                                                    onClick = {
-                                                        isRootRunning = true
-                                                        userStopRequested = false
-                                                        lastQueriedCid = null
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    isRootRunning = true
+                                                    userStopRequested = false
+                                                    lastQueriedCid = null
 
                                                         scope.launch {
                                                             try {
@@ -417,19 +428,28 @@ class MainActivity : ComponentActivity() {
                                                                 val cmd = "cd ${assets.workDir.absolutePath} && ./probe/spoof -r -d --verbose 1"
                                                                 val accumulator = mutableMapOf<String, Int>()
 
-                                                                output = buildString {
-                                                                    appendLine("Running probe (root)...")
-                                                                    appendLine("Command:")
-                                                                    appendLine(cmd)
-                                                                    appendLine()
-                                                                    appendLine("----- STDOUT (stream) -----")
-                                                                }
+                                                            output = buildString {
+                                                                appendLine("Running probe (root)...")
+                                                                appendLine("Command:")
+                                                                appendLine(cmd)
+                                                                appendLine()
+                                                                appendLine("----- STDOUT (stream) -----")
+                                                            }
+                                                            intercarrierStatus = "Inter-carrier: pending"
 
-                                                                val exitCode = withContext(Dispatchers.IO) {
-                                                                    RootShell.runAsRootStreaming(
-                                                                        command = cmd,
-                                                                        onStdoutLine = { line ->
-                                                                            output += "\n$line"
+                                                            val exitCode = withContext(Dispatchers.IO) {
+                                                                RootShell.runAsRootStreaming(
+                                                                    command = cmd,
+                                                                    onStdoutLine = { line ->
+                                                                        output += "\n$line"
+                                                                        if (line.contains("[intercarrier]")) {
+                                                                            val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
+                                                                            intercarrierStatus = when {
+                                                                                delta == null -> "Inter-carrier: unknown"
+                                                                                delta >= 600 -> "Inter-carrier: Yes (delta=${delta} ms)"
+                                                                                else -> "Inter-carrier: No (delta=${delta} ms)"
+                                                                            }
+                                                                        }
 
                                                                         val parsed = tryParseCellFromStdoutLine(line, accumulator)
                                                                         if (parsed != null && parsed.cid != lastQueriedCid) {
@@ -532,11 +552,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                             }
                                                         }
                                                     },
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .height(48.dp),
-                                                    enabled = !isRootRunning
-                                                ) { Text("Probe") }
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(48.dp),
+                                                enabled = !isRootRunning && !isIntercarrierRunning
+                                            ) { Text("Probe") }
 
                                                 Button(
                                                     onClick = {
@@ -548,13 +568,98 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                         .weight(1f)
                                                         .height(48.dp),
                                                     enabled = isRootRunning
-                                                ) { Text("Stop") }
+                                            ) { Text("Stop") }
+                                        }
+
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Button(
+                                                    onClick = {
+                                                        if (isRootRunning || isIntercarrierRunning) {
+                                                            scope.launch { snackbarHostState.showSnackbar("Probe already running") }
+                                                            return@Button
+                                                        }
+                                                        isIntercarrierRunning = true
+                                                        userStopRequested = false
+                                                        lastQueriedCid = null
+                                                        scope.launch {
+                                                            try {
+                                                                val assets = withContext(Dispatchers.IO) {
+                                                                    runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
+                                                                        throw IOException("Bundled probe binary/config not found: ${e.message}")
+                                                                    }
+                                                                }
+                                                                val cmd = "cd ${assets.workDir.absolutePath} && ./probe/spoof -r -d --verbose 1"
+                                                                output = buildString {
+                                                                    appendLine("Running inter-carrier test (root)...")
+                                                                    appendLine("Command:")
+                                                                    appendLine(cmd)
+                                                                    appendLine()
+                                                                    appendLine("----- STDOUT (stream) -----")
+                                                                }
+                                                                intercarrierStatus = "Inter-carrier: pending"
+                                                                val exitCode = withContext(Dispatchers.IO) {
+                                                                    RootShell.runAsRootStreaming(
+                                                                        command = cmd,
+                                                                        onStdoutLine = { line ->
+                                                                            output += "\n$line"
+                                                                            if (line.contains("[intercarrier]") && !userStopRequested) {
+                                                                                userStopRequested = true
+                                                                                RootShell.requestStop()
+                                                                                val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
+                                                                                intercarrierStatus = when {
+                                                                                    delta == null -> "Inter-carrier: unknown"
+                                                                                    delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms)"
+                                                                                    else -> "Inter-carrier: No (delta=${delta} ms)"
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                        onStderrLine = { line ->
+                                                                            output += "\n[ERR] $line"
+                                                                        }
+                                                                    )
+                                                                }
+                                                                output += buildString {
+                                                                    appendLine()
+                                                                    appendLine()
+                                                                    appendLine("----- PROCESS DONE -----")
+                                                                    appendLine("Exit code: $exitCode")
+                                                                    if (userStopRequested) appendLine("(Stopped by user)")
+                                                                }
+                                                                snackbarHostState.showSnackbar("Inter-carrier test finished (exit $exitCode)")
+                                                            } catch (e: Exception) {
+                                                                output = "Inter-carrier test failed: ${e.message ?: e}"
+                                                                snackbarHostState.showSnackbar("Inter-carrier test failed: ${e.message ?: e}")
+                                                            } finally {
+                                                                isIntercarrierRunning = false
+                                                            }
+                                                        }
+                                                    },
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(48.dp),
+                                                    enabled = !isRootRunning && !isIntercarrierRunning
+                                                ) { Text("Inter-carrier test", style = MaterialTheme.typography.labelSmall) }
+
+                                                Button(
+                                                    onClick = {
+                                                        userStopRequested = true
+                                                        RootShell.requestStop()
+                                                        output += "\n\n[Inter-carrier stop requested, waiting for process to terminate...]"
+                                                    },
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(48.dp),
+                                                    enabled = isIntercarrierRunning
+                                                ) { Text("Stop inter-carrier", style = MaterialTheme.typography.labelSmall) }
                                             }
                                         }
                                     }
 
-                                    // Map card
-                                    Card(
+                                // Map card
+                                Card(
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = MaterialTheme.shapes.medium,
                                         colors = CardDefaults.cardColors(
