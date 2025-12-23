@@ -1,6 +1,7 @@
 package com.example.cellidtracker
 
 import android.os.Bundle
+import com.example.cellidtracker.BuildConfig
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -422,7 +423,7 @@ class MainActivity : ComponentActivity() {
                                                                         throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                                     }
                                                                 }
-                                                                val cmd = "cd ${assets.workDir.absolutePath} && ./probe/spoof -r -d --verbose 1"
+                                                                val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
                                                                 val accumulator = mutableMapOf<String, Int>()
 
                                                             output = buildString {
@@ -592,7 +593,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                     throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                                     }
                                                                 }
-                                                                val cmd = "cd ${assets.workDir.absolutePath} && ./probe/spoof -r -d --verbose 1"
+                                                                val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
                                                                 output = buildString {
                                                                     appendLine("Running inter-carrier test (root)...")
                                                                     appendLine("Command:")

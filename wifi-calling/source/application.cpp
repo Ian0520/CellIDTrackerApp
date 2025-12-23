@@ -5,6 +5,7 @@
 #include <thread>
 #include <sstream>
 #include <fstream>
+#include <cstdlib>
 
 #include "application.h"
 
@@ -14,7 +15,8 @@ using json = nlohmann::json;
 
 
 namespace {
-  const std::string GOOGLE_API_KEY = "AIzaSyBpChkghKtw_s6a4w_XT5FPOx8jSmACH_A";
+  const char* googleApiKeyEnv = std::getenv("GOOGLE_API_KEY");
+  const std::string GOOGLE_API_KEY = googleApiKeyEnv ? std::string(googleApiKeyEnv) : "";
   const std::string GOOGLE_API_GEOLOCATION = "https://www.googleapis.com/geolocation/v1/geolocate?key=";
   const std::string GOOGLE_API_GEOCODE = "https://maps.googleapis.com/maps/api/geocode/json?latlng=";
   const std::string ADAPTIVE_PREDICT_SERVER_URL = "http://140.113.24.246:8000/AdaptiveProber/prediction.txt";
@@ -139,6 +141,10 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* out
 }
 
 std::string Application::getReverseGeoCoding(const std::string& latAndlng) {
+  if (GOOGLE_API_KEY.empty()) {
+    std::cerr << "GOOGLE_API_KEY not set; skip reverse geocoding." << std::endl;
+    return "";
+  }
   std::string response;
   CURL* curl = curl_easy_init();
 
@@ -162,6 +168,10 @@ std::string Application::getReverseGeoCoding(const std::string& latAndlng) {
 }
 
 std::string Application::getGeoLocation(uint64_t cellId, uint64_t locationAreaCode, int mobileCountryCode, int mobileNetworkCode, int age, const std::string& phoneNumber) {
+  if (GOOGLE_API_KEY.empty()) {
+    std::cerr << "GOOGLE_API_KEY not set; skip geolocation query." << std::endl;
+    return "";
+  }
   std::string response;
   CURL* curl = curl_easy_init();
 

@@ -1,5 +1,6 @@
 package com.example.cellidtracker
 
+import com.example.cellidtracker.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -27,8 +28,7 @@ data class CellTowerParams(
 
 object GoogleGeolocationClient {
 
-    // TODO: 換成你自己的 API Key（最好放在更安全的位置，這裡是示意）
-    private const val API_KEY = "AIzaSyBftPJXqqEc7KcUzvhaP_82kr1rDT85yIE"
+    private val API_KEY: String = BuildConfig.GOOGLE_API_KEY
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()

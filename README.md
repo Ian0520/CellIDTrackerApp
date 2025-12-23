@@ -12,7 +12,7 @@ Key features:
 
 ## Requirements
 - Rooted device (probe binary runs via `su`).
-- Google Geolocation API key (currently hard-coded in the app).
+- Google Geolocation API key (placed locally, not committed).
 - Network access for geolocation.
 - Bundled probe binary and configs per ABI in assets (e.g., `app/src/main/assets/probe/armeabi-v7a/spoof` and `app/src/main/assets/config/...`). Add other ABIs (e.g., arm64-v8a) as needed.
 - To rebuild the probe: Android NDK (r25 in the example), CMake (>=3.24), and the native dependencies present (Crypto++, libcurl with mbedtls, nlohmann/json) pulled by the `wifi-calling` CMake.
@@ -22,6 +22,13 @@ Key features:
 ./gradlew :app:assembleDebug
 ./gradlew :app:installDebug
 ```
+
+### Provide your Google API key (Android app)
+Put your key in `local.properties` (git-ignored):
+```
+GOOGLE_API_KEY=your_real_key_here
+```
+The build injects it into `BuildConfig.GOOGLE_API_KEY`; the app and bundled probe read it from there and pass it to the native binary as an environment variable.
 
 ## Notes
 - On first run, the app copies `probe/<abi>/spoof` and `config/...` from assets into its private storage and executes the probe via root.

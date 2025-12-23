@@ -16,6 +16,13 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Load Google API key from local (ignored) properties to avoid checking it into VCS.
+        val googleApiKey: String = (
+            gradleLocalProperties(rootDir).getProperty("GOOGLE_API_KEY")
+                ?: project.findProperty("GOOGLE_API_KEY") as? String
+            ) ?: error("GOOGLE_API_KEY not set in local.properties or Gradle properties")
+        buildConfigField("String", "GOOGLE_API_KEY", "\"$googleApiKey\"")
     }
 
     buildTypes {
@@ -77,3 +84,4 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.osmdroid:osmdroid-android:6.1.14") 
 }
+import com.android.build.gradle.internal.cxx.configure.gradleLocalProperties
