@@ -363,6 +363,11 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
   } else {
     return false;
   }
+
+  auto now = std::chrono::steady_clock::now();
+  if (status == 100) {
+    state.t_trying = now;
+  }
   
   if (status == 0) {
     // Subscribe OK
@@ -400,9 +405,29 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       state.rseq = match[1].str();
       if (util::context.verbose > 2) std::cout << "rseq: " << state.rseq << std::endl;
     }
+    if (!state.t_pr.has_value()) {
+      state.t_pr = now;
+      if (state.t_trying.has_value()) {
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
+        std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+      } else {
+        std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
+      }
+    }
+    // cancel immediately for stealth probing
+    currentSipState = SipState::CANCEL;
   }
   else if (status == 180) {
     // Ringing
+    if (!state.t_pr.has_value()) {
+      state.t_pr = now;
+      if (state.t_trying.has_value()) {
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
+        std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+      } else {
+        std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
+      }
+    }
     currentSipState = SipState::CANCEL;
     state.calleeDoSAttackable[state.calleeId] = true;
   }

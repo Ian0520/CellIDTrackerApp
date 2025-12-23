@@ -487,6 +487,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
       std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
   }
   session.currentSipState = SipState::INVITE;
+  session.state.t_trying.reset();
+  session.state.t_pr.reset();
 
 
   while (true) {
@@ -628,6 +630,8 @@ void Application::MultiCallDetect(pollfd& pfd, int nReady, const std::vector<std
     session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sips.back()->invite.data()), sips.back()->invite.size()));
   }
   session.currentSipState = SipState::INVITE;
+  session.state.t_trying.reset();
+  session.state.t_pr.reset();
   
   while (true) {
     if (!handleIncomingPackets(nReady)) break;
@@ -686,6 +690,10 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   if (util::context.verbose) std::cout << "Launch call dos to " << calleeId << std::endl;
   session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.invite.data()), front.invite.size()));
   session.currentSipState = SipState::INVITE;
+  session.state.t_trying.reset();
+  session.state.t_pr.reset();
+  session.state.t_trying.reset();
+  session.state.t_pr.reset();
 
   session.state.sessionProgressCount[calleeId] = 0;
 

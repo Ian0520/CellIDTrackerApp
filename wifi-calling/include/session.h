@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <optional>
+#include <chrono>
 
 #include "encoder.h"
 #include "sadb.h"
@@ -39,6 +41,9 @@ struct State {
   bool ack;
   bool psh;
   bool useESP;
+
+  std::optional<std::chrono::steady_clock::time_point> t_trying;
+  std::optional<std::chrono::steady_clock::time_point> t_pr;
 };
 
 enum class SipState { IDLE, INVITE, SPROG, PRACK, RING, CANCEL, BUSY, REQUESTERMINATE, ACK, END };
