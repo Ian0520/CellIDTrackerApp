@@ -401,11 +401,6 @@ class MainActivity : ComponentActivity() {
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
                                                 }
-                                                Text(
-                                                    intercarrierStatus,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
                                             }
 
                                             Row(
@@ -446,7 +441,7 @@ class MainActivity : ComponentActivity() {
                                                                             val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
                                                                             intercarrierStatus = when {
                                                                                 delta == null -> "Inter-carrier: unknown"
-                                                                                delta >= 600 -> "Inter-carrier: Yes (delta=${delta} ms)"
+                                                                                delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
                                                                                 else -> "Inter-carrier: No (delta=${delta} ms)"
                                                                             }
                                                                         }
@@ -609,12 +604,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                 userStopRequested = true
                                                                                 RootShell.requestStop()
                                                                                 val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                                                                                intercarrierStatus = when {
-                                                                                    delta == null -> "Inter-carrier: unknown"
-                                                                                    delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms)"
-                                                                                    else -> "Inter-carrier: No (delta=${delta} ms)"
-                                                                                }
-                                                                            }
+                                                                        intercarrierStatus = when {
+                                                                            delta == null -> "Inter-carrier: unknown"
+                                                                            delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
+                                                                            else -> "Inter-carrier: No (delta=${delta} ms)"
+                                                                        }
+                                                                    }
                                                                         },
                                                                         onStderrLine = { line ->
                                                                             output += "\n[ERR] $line"
