@@ -1,43 +1,28 @@
 # CellIDTracker
+
 ## About the app
-CellIDTracker is an Android app that drives a bundled (root-required) probe binary to discover cell IDs, looks up their location via Google Geolocation, and visualizes the result on an OpenStreetMap (osmdroid) map with an accuracy circle. Key features:
+CellIDTracker is an Android app that drives a bundled (root-required) probe binary to discover cell IDs, looks up their location via Google Geolocation, and visualizes the result on an OpenStreetMap (osmdroid) map with an accuracy circle.
+
+Key features:
 - Set victim number (written to `victim_list` for the probe).
 - Run the probe (root) and live-parse MCC/MNC/LAC/CID from stdout.
-- Auto-query Google Geolocation and show lat/lon/accuracy on the map.
-- View recent probe history and tap an entry to restore its location on the map.
+- Send multiple recent cell towers to Google Geolocation to improve stability/accuracy; show lat/lon/accuracy on the map with an accuracy circle.
+- View recent probe history (time, victim, cell info, location) and tap an entry to restore its location on the map.
 - View the raw log stream inside the app.
 
-## How to build
-try to build   
-./gradlew :app:assembleDebug   
-to install  
-./gradlew clean :app:installDebug  
+## Requirements
+- Rooted device (probe binary runs via `su`).
+- Google Geolocation API key (currently hard-coded in the app).
+- Network access for geolocation.
+- Bundled probe binary and configs per ABI in assets (e.g., `app/src/main/assets/probe/armeabi-v7a/spoof` and `app/src/main/assets/config/...`). Add other ABIs (e.g., arm64-v8a) as needed.
 
-## Building the native probe externally and bundling it
-1. Build for each ABI you need (example for arm64-v8a; adjust ABI/platform as needed):
-   ```
-   cd wifi-calling
-   cmake -S all -B build -D CMAKE_TOOLCHAIN_FILE=$HOME/android-ndk-r25/build/cmake/android.toolchain.cmake -D ANDROID_PLATFORM=android-29 -D ANDROID_ABI=arm64-v8a -D CMAKE_BUILD_TYPE=Release
-   cmake --build build --config Release
-   ```
-2. Copy the resulting `spoof` binary into the app assets for that ABI:
-   ```
-   mkdir -p app/src/main/assets/probe/arm64-v8a
-   cp wifi-calling/bin/spoof app/src/main/assets/probe/arm64-v8a/
-   ```
-   (Repeat for other ABIs you build, e.g., armeabi-v7a → `probe/armeabi-v7a/`.)
-3. Copy the configs into app assets:
-   ```
-   rm -rf app/src/main/assets/config
-   cp -r wifi-calling/config app/src/main/assets/config
-   ```
-4. Build and install the app (`./gradlew :app:assembleDebug` or `:app:installDebug`). At runtime the app extracts `probe/<abi>/spoof` and `config/...` to its private storage and runs the probe via root.
+## Build and install
+```bash
+./gradlew :app:assembleDebug
+./gradlew :app:installDebug
+```
 
-If you instead wire Gradle/CMake to build the native code inside the app, ensure all native deps are vendored locally (no network fetch), and add a copy task to move `spoof` from the native build output into `app/src/main/assets/probe/<abi>/`.
-
-
-## Native probe layout (recommended for GitHub)
-- Put native sources under `app/src/main/cpp/` (e.g., `third_party/wificalling`, `core_adapter`, etc.) so Gradle can see them.
-- Vendor any native deps (Crypto++, curl, mbedtls, nlohmann/json) under `app/src/main/cpp/third_party/` or commit prebuilt static libs per ABI to avoid network fetches.
-- If you build the executable externally, store the outputs per ABI under `app/src/main/assets/probe/<abi>/spoof` (e.g., `probe/arm64-v8a/spoof`, `probe/armeabi-v7a/spoof`) and configs under `app/src/main/assets/config/...`.
-- The app copies these to `filesDir` at runtime and runs `./probe/spoof` via root; no manual adb push is needed once assets are present.
+## Notes
+- On first run, the app copies `probe/<abi>/spoof` and `config/...` from assets into its private storage and executes the probe via root.
+- Map uses osmdroid; deprecation warnings are cosmetic.
+- History records time and victim; it is not segmented per target unless you clear it manually.
