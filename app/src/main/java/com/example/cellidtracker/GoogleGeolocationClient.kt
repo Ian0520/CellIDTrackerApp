@@ -17,6 +17,14 @@ data class CellLocationResult(
     val range: Double? = null    // accuracy (meters)
 )
 
+data class CellTowerParams(
+    val mcc: Int,
+    val mnc: Int,
+    val lac: Int,
+    val cid: Int,
+    val radioType: String = "lte"
+)
+
 object GoogleGeolocationClient {
 
     // TODO: 換成你自己的 API Key（最好放在更安全的位置，這裡是示意）
@@ -39,7 +47,19 @@ object GoogleGeolocationClient {
         cellId: Int,
         // 可選：radioType 你可以依實際情況傳 "lte" / "wcdma" / "gsm"...
         radioType: String = "lte"
+    ): Result<CellLocationResult> = queryByCells(
+        listOf(CellTowerParams(mcc, mnc, lac, cellId, radioType))
+    )
+
+    /**
+     * 使用多個 cell towers 提升定位穩定度/精度。
+     */
+    suspend fun queryByCells(
+        towers: List<CellTowerParams>
     ): Result<CellLocationResult> = withContext(Dispatchers.IO) {
+        if (towers.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("No cell towers provided"))
+        }
         try {
             val url =
                 "https://www.googleapis.com/geolocation/v1/geolocate?key=$API_KEY"
@@ -47,15 +67,17 @@ object GoogleGeolocationClient {
             // 建 request JSON
             val root = JSONObject().apply {
                 put("considerIp", false)
-                put("cellTowers", JSONArray().apply {
-                    put(JSONObject().apply {
-                        put("mobileCountryCode", mcc)
-                        put("mobileNetworkCode", mnc)
-                        put("locationAreaCode", lac)
-                        put("cellId", cellId)
-                        put("radioType", radioType)
+                val arr = JSONArray()
+                towers.forEach { t ->
+                    arr.put(JSONObject().apply {
+                        put("mobileCountryCode", t.mcc)
+                        put("mobileNetworkCode", t.mnc)
+                        put("locationAreaCode", t.lac)
+                        put("cellId", t.cid)
+                        put("radioType", t.radioType)
                     })
-                })
+                }
+                put("cellTowers", arr)
             }
             val requestJson = root.toString()
             val body: RequestBody = requestJson.toRequestBody(JSON_MEDIA_TYPE)

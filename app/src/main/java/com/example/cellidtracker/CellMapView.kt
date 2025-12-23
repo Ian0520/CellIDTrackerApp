@@ -83,9 +83,9 @@ fun CellMapView(
                 if (accuracy != null && accuracy > 0) {
                     val circle = Polygon(view)
                     circle.points = Polygon.pointsAsCircle(point, accuracy)
-                    circle.fillColor = Color.argb(40, 0, 150, 255) // 淺藍半透明
-                    circle.strokeColor = Color.argb(120, 0, 120, 255)
-                    circle.strokeWidth = 2f
+                    circle.fillPaint.color = Color.argb(40, 0, 150, 255) // 淺藍半透明
+                    circle.outlinePaint.color = Color.argb(120, 0, 120, 255)
+                    circle.outlinePaint.strokeWidth = 2f
                     view.overlays.add(circle)
                     accuracyOverlay = circle
                     view.invalidate()

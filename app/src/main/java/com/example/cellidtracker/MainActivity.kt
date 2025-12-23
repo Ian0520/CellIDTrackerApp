@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -58,7 +59,8 @@ data class ProbeHistory(
     val lat: Double?,
     val lon: Double?,
     val accuracy: Double?,
-    val timestampMillis: Long
+    val timestampMillis: Long,
+    val victim: String
 )
 
 /** Try to extract mcc/mnc/lac/cellid from a stdout line. */
@@ -196,6 +198,7 @@ class MainActivity : ComponentActivity() {
                 val timeFormatter = remember {
                     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
                 }
+                val recentTowers = remember { mutableStateListOf<CellTowerParams>() }
 
                 // Manual geolocation fallback
                 var mccInput by remember { mutableStateOf("") }
@@ -312,6 +315,9 @@ class MainActivity : ComponentActivity() {
                                                                     appendLine(catConfigResult.stderr.ifBlank { "(empty)" })
                                                                 }
 
+                                                                // New victim: clear recent towers to avoid mixing targets
+                                                                recentTowers.clear()
+
                                                                 val msg = if (appendResult.exitCode == 0) {
                                                                     "已更新 victim_list"
                                                                 } else {
@@ -425,47 +431,51 @@ class MainActivity : ComponentActivity() {
                                                                         onStdoutLine = { line ->
                                                                             output += "\n$line"
 
-                                                                            val parsed = tryParseCellFromStdoutLine(line, accumulator)
-                                                                            if (parsed != null && parsed.cid != lastQueriedCid) {
-                                                                                lastQueriedCid = parsed.cid
-                                                                                mccInput = parsed.mcc.toString()
-                                                                                mncInput = parsed.mnc.toString()
-                                                                                lacInput = parsed.lac.toString()
-                                                                                cidInput = parsed.cid.toString()
+                                                                        val parsed = tryParseCellFromStdoutLine(line, accumulator)
+                                                                        if (parsed != null && parsed.cid != lastQueriedCid) {
+                                                                            lastQueriedCid = parsed.cid
+                                                                            mccInput = parsed.mcc.toString()
+                                                                            mncInput = parsed.mnc.toString()
+                                                                            lacInput = parsed.lac.toString()
+                                                                            cidInput = parsed.cid.toString()
 
-                                                                                scope.launch {
-                                                                                    output += """
+                                                                            // 更新最近的 cell tower 列表（保留最多 5 筆，最新在前）
+                                                                            recentTowers.removeAll { it.cid == parsed.cid && it.mcc == parsed.mcc && it.mnc == parsed.mnc && it.lac == parsed.lac }
+                                                                            recentTowers.add(0, CellTowerParams(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, "lte"))
+                                                                            if (recentTowers.size > 5) {
+                                                                                recentTowers.removeLast()
+                                                                            }
+
+                                                                            scope.launch {
+                                                                                output += """
 
 [Geo] querying Google Geolocation...
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 """.trimIndent()
 
-                                                                                    val result = withContext(Dispatchers.IO) {
-                                                                                        GoogleGeolocationClient.queryByCell(
-                                                                                            mcc = parsed.mcc,
-                                                                                            mnc = parsed.mnc,
-                                                                                            lac = parsed.lac,
-                                                                                            cellId = parsed.cid,
-                                                                                            radioType = "lte"
-                                                                                        )
-                                                                                    }
+                                                                                val result = withContext(Dispatchers.IO) {
+                                                                                    GoogleGeolocationClient.queryByCells(
+                                                                                        towers = recentTowers.toList()
+                                                                                    )
+                                                                                }
 
                                                                                     output += result.fold(
                                                                                         onSuccess = { loc ->
                                                                                             cellLocation = loc
-                                                                                            history.add(
-                                                                                                0,
-                                                                                                ProbeHistory(
-                                                                                                    parsed.mcc,
-                                                                                                    parsed.mnc,
-                                                                                                    parsed.lac,
-                                                                                                    parsed.cid,
-                                                                                                    loc.lat,
-                                                                                                    loc.lon,
-                                                                                                    loc.range,
-                                                                                                    System.currentTimeMillis()
-                                                                                                )
-                                                                                            )
+                                                                            history.add(
+                                                                                0,
+                                                                                ProbeHistory(
+                                                                                    parsed.mcc,
+                                                                                    parsed.mnc,
+                                                                                    parsed.lac,
+                                                                                    parsed.cid,
+                                                                                    loc.lat,
+                                                                                    loc.lon,
+                                                                                    loc.range,
+                                                                                    System.currentTimeMillis(),
+                                                                                    victimInput.trim()
+                                                                                )
+                                                                            )
                                                                                             buildString {
                                                                                                 appendLine()
                                                                                                 appendLine("[Google Geolocation] success")
@@ -487,7 +497,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                     null,
                                                                                                     null,
                                                                                                     null,
-                                                                                                    System.currentTimeMillis()
+                                                                                                    System.currentTimeMillis(),
+                                                                                                    victimInput.trim()
                                                                                                 )
                                                                                             )
                                                                                             "\n[Google Geolocation] 查詢失敗：${e.message ?: e.toString()}"
@@ -700,6 +711,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )
+                                                            Text(
+                                                                "Victim: ${item.victim.ifBlank { "(unknown)" }}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
                                                             if (item.lat != null && item.lon != null) {
                                                                 Text(
                                                                     buildString {
@@ -717,7 +733,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                 )
                                                             }
                                                             if (idx < history.lastIndex) {
-                                                                Divider()
+                                                                HorizontalDivider()
                                                             }
                                                         }
                                                     }
