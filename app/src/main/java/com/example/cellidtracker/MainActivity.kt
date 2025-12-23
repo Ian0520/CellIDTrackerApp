@@ -194,6 +194,7 @@ class MainActivity : ComponentActivity() {
                 var userStopRequested by remember { mutableStateOf(false) }
                 var cellLocation by remember { mutableStateOf<CellLocationResult?>(null) }
                 var intercarrierStatus by remember { mutableStateOf("Inter-carrier: unknown") }
+                var probeParsedCell by remember { mutableStateOf(false) }
                 var showLog by remember { mutableStateOf(false) }
                 val history = remember { mutableStateListOf<ProbeHistory>() }
                 val timeFormatter = remember {
@@ -373,11 +374,6 @@ class MainActivity : ComponentActivity() {
                                                         SmallInfoChip("LAC", lacInput)
                                                         SmallInfoChip("CID", cidInput)
                                                     }
-                                                    Text(
-                                                        intercarrierStatus,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
                                                     val loc = cellLocation
                                                     if (loc != null) {
                                                         Text(
@@ -401,6 +397,11 @@ class MainActivity : ComponentActivity() {
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
                                                 }
+                                                Text(
+                                                    intercarrierStatus,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
                                             }
 
                                             Row(
@@ -412,11 +413,12 @@ class MainActivity : ComponentActivity() {
                                                     isRootRunning = true
                                                     userStopRequested = false
                                                     lastQueriedCid = null
+                                                    probeParsedCell = false
 
-                                                        scope.launch {
-                                                            try {
-                                                                val assets = withContext(Dispatchers.IO) {
-                                                                    runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
+                                                    scope.launch {
+                                                        try {
+                                                            val assets = withContext(Dispatchers.IO) {
+                                                                runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
                                                                         throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                                     }
                                                                 }
@@ -442,22 +444,25 @@ class MainActivity : ComponentActivity() {
                                                                             intercarrierStatus = when {
                                                                                 delta == null -> "Inter-carrier: unknown"
                                                                                 delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
-                                                                                else -> "Inter-carrier: No (delta=${delta} ms)"
+                                                                                else -> {
+                                                                                    if (probeParsedCell) "Inter-carrier: No (delta=${delta} ms)" else "Inter-carrier: No (delta=${delta} ms) — This target is not inter-carrier, but cannot be probed now. Try later."
+                                                                                }
                                                                             }
                                                                         }
 
                                                                         val parsed = tryParseCellFromStdoutLine(line, accumulator)
-                                                                        if (parsed != null && parsed.cid != lastQueriedCid) {
-                                                                            lastQueriedCid = parsed.cid
-                                                                            mccInput = parsed.mcc.toString()
-                                                                            mncInput = parsed.mnc.toString()
-                                                                            lacInput = parsed.lac.toString()
-                                                                            cidInput = parsed.cid.toString()
+                                                    if (parsed != null && parsed.cid != lastQueriedCid) {
+                                                        lastQueriedCid = parsed.cid
+                                                        mccInput = parsed.mcc.toString()
+                                                        mncInput = parsed.mnc.toString()
+                                                        lacInput = parsed.lac.toString()
+                                                        cidInput = parsed.cid.toString()
+                                                        probeParsedCell = true
 
-                                                                            // 更新最近的 cell tower 列表（保留最多 5 筆，最新在前）
-                                                                            recentTowers.removeAll { it.cid == parsed.cid && it.mcc == parsed.mcc && it.mnc == parsed.mnc && it.lac == parsed.lac }
-                                                                            recentTowers.add(0, CellTowerParams(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, "lte"))
-                                                                            if (recentTowers.size > 5) {
+                                                        // 更新最近的 cell tower 列表（保留最多 5 筆，最新在前）
+                                                        recentTowers.removeAll { it.cid == parsed.cid && it.mcc == parsed.mcc && it.mnc == parsed.mnc && it.lac == parsed.lac }
+                                                        recentTowers.add(0, CellTowerParams(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, "lte"))
+                                                        if (recentTowers.size > 5) {
                                                                                 recentTowers.removeLast()
                                                                             }
 
@@ -571,19 +576,20 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
                                                 Button(
-                                                    onClick = {
-                                                        if (isRootRunning || isIntercarrierRunning) {
-                                                            scope.launch { snackbarHostState.showSnackbar("Probe already running") }
-                                                            return@Button
-                                                        }
-                                                        isIntercarrierRunning = true
-                                                        userStopRequested = false
-                                                        lastQueriedCid = null
-                                                        scope.launch {
-                                                            try {
-                                                                val assets = withContext(Dispatchers.IO) {
-                                                                    runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
-                                                                        throw IOException("Bundled probe binary/config not found: ${e.message}")
+                                                onClick = {
+                                                    if (isRootRunning || isIntercarrierRunning) {
+                                                        scope.launch { snackbarHostState.showSnackbar("Probe already running") }
+                                                        return@Button
+                                                    }
+                                                    isIntercarrierRunning = true
+                                                    userStopRequested = false
+                                                    lastQueriedCid = null
+                                                    probeParsedCell = false
+                                                    scope.launch {
+                                                        try {
+                                                            val assets = withContext(Dispatchers.IO) {
+                                                                runCatching { ensureProbeAssets(ctx) }.getOrElse { e ->
+                                                                    throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                                     }
                                                                 }
                                                                 val cmd = "cd ${assets.workDir.absolutePath} && ./probe/spoof -r -d --verbose 1"
@@ -604,12 +610,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                 userStopRequested = true
                                                                                 RootShell.requestStop()
                                                                                 val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                                                                        intercarrierStatus = when {
-                                                                            delta == null -> "Inter-carrier: unknown"
-                                                                            delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
-                                                                            else -> "Inter-carrier: No (delta=${delta} ms)"
-                                                                        }
-                                                                    }
+                                                                                intercarrierStatus = when {
+                                                                                    delta == null -> "Inter-carrier: unknown"
+                                                                                    delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
+                                                                                    else -> "Inter-carrier: No (delta=${delta} ms)"
+                                                                                }
+                                                                            }
                                                                         },
                                                                         onStderrLine = { line ->
                                                                             output += "\n[ERR] $line"
