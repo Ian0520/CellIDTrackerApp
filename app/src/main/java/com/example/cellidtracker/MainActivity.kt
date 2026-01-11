@@ -173,6 +173,20 @@ private fun ensureProbeAssets(ctx: android.content.Context): ProbeAssets {
     return ProbeAssets(workDir = workDir, bin = binDest, configDir = configDir)
 }
 
+/** Append inter-carrier PR interval (delta) to a local text file. */
+private fun appendPrIntervalLog(ctx: android.content.Context, delta: Long) {
+    val file = File(ctx.filesDir, "pr_intervals.txt")
+    val timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.now())
+    val line = "[$timestamp] delta_ms=$delta\n"
+    try {
+        file.appendText(line)
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -442,6 +456,7 @@ class MainActivity : ComponentActivity() {
                                                                         output += "\n$line"
                                                                         if (line.contains("[intercarrier]")) {
                                                                             val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
+                                                                            if (delta != null) appendPrIntervalLog(ctx, delta)
                                                                             intercarrierStatus = when {
                                                                                 delta == null -> "Inter-carrier: unknown"
                                                                                 delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
@@ -572,16 +587,25 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                             ) { Text("Stop") }
                                         }
 
+                                            var roundsInput by remember { mutableStateOf("1") }
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
                                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
+                                                OutlinedTextField(
+                                                    value = roundsInput,
+                                                    onValueChange = { roundsInput = it.filter { c -> c.isDigit() } },
+                                                    label = { Text("Rounds") },
+                                                    modifier = Modifier.weight(0.3f),
+                                                    singleLine = true
+                                                )
                                                 Button(
                                                 onClick = {
                                                     if (isRootRunning || isIntercarrierRunning) {
                                                         scope.launch { snackbarHostState.showSnackbar("Probe already running") }
                                                         return@Button
                                                     }
+                                                    val rounds = roundsInput.toIntOrNull() ?: 1
                                                     isIntercarrierRunning = true
                                                     userStopRequested = false
                                                     lastQueriedCid = null
@@ -594,54 +618,69 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                     }
                                                                 }
                                                                 val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
-                                                                output = buildString {
-                                                                    appendLine("Running inter-carrier test (root)...")
-                                                                    appendLine("Command:")
-                                                                    appendLine(cmd)
-                                                                    appendLine()
-                                                                    appendLine("----- STDOUT (stream) -----")
-                                                                }
-                                                                intercarrierStatus = "Inter-carrier: pending"
+                                                                
+                                                                output = "Starting batch run: $rounds rounds...\n"
+                                                                
+                                                                for (i in 1..rounds) {
+                                                                    if (userStopRequested) break
+                                                                    output += "\n--- Round $i/$rounds ---\n"
+                                                                    
+                                                                    intercarrierStatus = "Round $i: Pending"
+                                                                    // Reset stop for this round logic, but check global stop
+                                                                    var roundStop = false
+
                                                                 val exitCode = withContext(Dispatchers.IO) {
                                                                     RootShell.runAsRootStreaming(
                                                                         command = cmd,
                                                                         onStdoutLine = { line ->
+                                                                            // Only keep last 2000 chars to prevent OOM in long runs, but logic needs to be careful
+                                                                            if (output.length > 50000) output = output.takeLast(20000)
                                                                             output += "\n$line"
-                                                                            if (line.contains("[intercarrier]") && !userStopRequested) {
-                                                                                userStopRequested = true
+                                                                            
+                                                                            if (line.contains("[intercarrier]") && !roundStop) {
+                                                                                roundStop = true
                                                                                 RootShell.requestStop()
                                                                                 val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                                                                                intercarrierStatus = when {
-                                                                                    delta == null -> "Inter-carrier: unknown"
-                                                                                    delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
-                                                                                    else -> "Inter-carrier: No (delta=${delta} ms)"
-                                                                                }
+                                                                                if (delta != null) appendPrIntervalLog(ctx, delta)
+                                                                                intercarrierStatus = "Round $i: delta=${delta}ms"
                                                                             }
                                                                         },
                                                                         onStderrLine = { line ->
+                                                                            if (output.length > 50000) output = output.takeLast(20000)
                                                                             output += "\n[ERR] $line"
                                                                         }
                                                                     )
                                                                 }
+                                                                output += "\nRound $i finished (exit $exitCode)"
+                                                                // Small delay to let system settle
+                                                                kotlinx.coroutines.delay(1000)
+                                                                }
+
                                                                 output += buildString {
                                                                     appendLine()
                                                                     appendLine()
-                                                                    appendLine("----- PROCESS DONE -----")
-                                                                    appendLine("Exit code: $exitCode")
+                                                                    appendLine("----- BATCH DONE -----")
                                                                     if (userStopRequested) appendLine("(Stopped by user)")
                                                                 }
-                                                                snackbarHostState.showSnackbar("Inter-carrier test finished (exit $exitCode)")
+                                                                snackbarHostState.showSnackbar("Batch test finished")
                                                             } catch (e: Exception) {
-                                                                output = "Inter-carrier test failed: ${e.message ?: e}"
-                                                                snackbarHostState.showSnackbar("Inter-carrier test failed: ${e.message ?: e}")
+                                                                output = "Batch test failed: ${e.message ?: e}"
+                                                                snackbarHostState.showSnackbar("Batch test failed: ${e.message ?: e}")
                                                             } finally {
                                                                 isIntercarrierRunning = false
                                                             }
                                                         }
                                                     },
                                                     modifier = Modifier
-                                                        .weight(1f)
-                                                        .height(48.dp),
+                                                        .weight(0.7f)
+                                                        .height(56.dp), // Match TextField height approx
+                                                    enabled = !isRootRunning && !isIntercarrierRunning
+                                                ) { Text(if ((roundsInput.toIntOrNull() ?: 1) > 1) "Run Batch" else "Inter-carrier test") }
+
+                                                Button(
+                                                    onClick = {
+                                                        userStopRequested = true
+
                                                     enabled = !isRootRunning && !isIntercarrierRunning
                                                 ) { Text("Inter-carrier test", style = MaterialTheme.typography.labelSmall) }
 
