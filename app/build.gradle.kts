@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -18,10 +20,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Load Google API key from local (ignored) properties to avoid checking it into VCS.
-        val googleApiKey: String = (
-            gradleLocalProperties(rootDir).getProperty("GOOGLE_API_KEY")
-                ?: project.findProperty("GOOGLE_API_KEY") as? String
-            ) ?: error("GOOGLE_API_KEY not set in local.properties or Gradle properties")
+        val googleApiKey: String = run {
+            val props = Properties()
+            val localPropsFile = rootDir.resolve("local.properties")
+            if (localPropsFile.exists()) {
+                localPropsFile.inputStream().use(props::load)
+            }
+            props.getProperty("GOOGLE_API_KEY")
+                ?: providers.gradleProperty("GOOGLE_API_KEY").orNull
+                ?: error("GOOGLE_API_KEY not set in local.properties or Gradle properties")
+        }
         buildConfigField("String", "GOOGLE_API_KEY", "\"$googleApiKey\"")
     }
 
@@ -42,6 +50,7 @@ android {
         jvmTarget = "11"
     }
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
@@ -84,4 +93,3 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.osmdroid:osmdroid-android:6.1.14") 
 }
-import com.android.build.gradle.internal.cxx.configure.gradleLocalProperties
