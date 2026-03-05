@@ -2,6 +2,8 @@ package com.example.cellidtracker
 
 import android.os.Bundle
 import com.example.cellidtracker.BuildConfig
+import com.example.cellidtracker.data.HistoryDatabase
+import com.example.cellidtracker.data.ProbeHistoryEntity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -28,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -63,6 +66,32 @@ data class ProbeHistory(
     val timestampMillis: Long,
     val victim: String
 )
+
+private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
+    ProbeHistory(
+        mcc = mcc,
+        mnc = mnc,
+        lac = lac,
+        cid = cid,
+        lat = lat,
+        lon = lon,
+        accuracy = accuracy,
+        timestampMillis = timestampMillis,
+        victim = victim
+    )
+
+private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
+    ProbeHistoryEntity(
+        victim = victim,
+        mcc = mcc,
+        mnc = mnc,
+        lac = lac,
+        cid = cid,
+        lat = lat,
+        lon = lon,
+        accuracy = accuracy,
+        timestampMillis = timestampMillis
+    )
 
 /** Try to extract mcc/mnc/lac/cellid from a stdout line. */
 private fun tryParseCellFromStdoutLine(
@@ -197,7 +226,8 @@ class MainActivity : ComponentActivity() {
                 var intercarrierStatus by remember { mutableStateOf("Inter-carrier: unknown") }
                 var probeParsedCell by remember { mutableStateOf(false) }
                 var showLog by remember { mutableStateOf(false) }
-                val history = remember { mutableStateListOf<ProbeHistory>() }
+                val historyByVictim = remember { mutableStateMapOf<String, SnapshotStateList<ProbeHistory>>() }
+                var selectedHistoryVictim by remember { mutableStateOf<String?>(null) }
                 val timeFormatter = remember {
                     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
                 }
@@ -211,6 +241,24 @@ class MainActivity : ComponentActivity() {
 
                 // Track last queried cell to avoid duplicate API calls
                 var lastQueriedCid by remember { mutableStateOf<Int?>(null) }
+
+                val db = remember { HistoryDatabase.getInstance(ctx) }
+
+                LaunchedEffect(Unit) {
+                    withContext(Dispatchers.IO) {
+                        val dao = db.historyDao()
+                        val loaded = dao.getVictims().associateWith { victim ->
+                            dao.getHistoryForVictim(victim).map { it.toDomain() }
+                        }
+                        withContext(Dispatchers.Main) {
+                            historyByVictim.clear()
+                            loaded.forEach { (victim, list) ->
+                                historyByVictim[victim] = mutableStateListOf<ProbeHistory>().apply { addAll(list) }
+                            }
+                            selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+                        }
+                    }
+                }
 
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbarHostState) }
@@ -483,20 +531,24 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                     output += result.fold(
                                                                                         onSuccess = { loc ->
                                                                                             cellLocation = loc
-                                                                            history.add(
-                                                                                0,
-                                                                                ProbeHistory(
-                                                                                    parsed.mcc,
-                                                                                    parsed.mnc,
-                                                                                    parsed.lac,
-                                                                                    parsed.cid,
-                                                                                    loc.lat,
-                                                                                    loc.lon,
-                                                                                    loc.range,
-                                                                                    System.currentTimeMillis(),
-                                                                                    victimInput.trim()
-                                                                                )
-                                                                            )
+                                                                                            val victimKey = victimInput.trim().ifBlank { "(unknown)" }
+                                                                                            val entry = ProbeHistory(
+                                                                                                parsed.mcc,
+                                                                                                parsed.mnc,
+                                                                                                parsed.lac,
+                                                                                                parsed.cid,
+                                                                                                loc.lat,
+                                                                                                loc.lon,
+                                                                                                loc.range,
+                                                                                                System.currentTimeMillis(),
+                                                                                                victimKey
+                                                                                            )
+                                                                                            val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
+                                                                                            list.add(0, entry)
+                                                                                            selectedHistoryVictim = victimKey
+                                                                                            withContext(Dispatchers.IO) {
+                                                                                                db.historyDao().insert(entry.toEntity())
+                                                                                            }
                                                                                             buildString {
                                                                                                 appendLine()
                                                                                                 appendLine("[Google Geolocation] success")
@@ -508,20 +560,24 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                         },
                                                                                         onFailure = { e ->
                                                                                             cellLocation = null
-                                                                                            history.add(
-                                                                                                0,
-                                                                                                ProbeHistory(
-                                                                                                    parsed.mcc,
-                                                                                                    parsed.mnc,
-                                                                                                    parsed.lac,
-                                                                                                    parsed.cid,
-                                                                                                    null,
-                                                                                                    null,
-                                                                                                    null,
-                                                                                                    System.currentTimeMillis(),
-                                                                                                    victimInput.trim()
-                                                                                                )
+                                                                                            val victimKey = victimInput.trim().ifBlank { "(unknown)" }
+                                                                                            val entry = ProbeHistory(
+                                                                                                parsed.mcc,
+                                                                                                parsed.mnc,
+                                                                                                parsed.lac,
+                                                                                                parsed.cid,
+                                                                                                null,
+                                                                                                null,
+                                                                                                null,
+                                                                                                System.currentTimeMillis(),
+                                                                                                victimKey
                                                                                             )
+                                                                                            val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
+                                                                                            list.add(0, entry)
+                                                                                            selectedHistoryVictim = victimKey
+                                                                                            withContext(Dispatchers.IO) {
+                                                                                                db.historyDao().insert(entry.toEntity())
+                                                                                            }
                                                                                             "\n[Google Geolocation] 查詢失敗：${e.message ?: e.toString()}"
                                                                                         }
                                                                                     )
@@ -774,41 +830,85 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                     ) {
                                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                             Text("History", style = MaterialTheme.typography.titleMedium)
-                                            if (history.isEmpty()) {
+                                            val victimTabs = historyByVictim.keys.sorted()
+                                            val currentVictimTab = selectedHistoryVictim?.takeIf { historyByVictim.containsKey(it) }
+                                                ?: victimTabs.firstOrNull()
+                                            if (currentVictimTab != selectedHistoryVictim) {
+                                                selectedHistoryVictim = currentVictimTab
+                                            }
+
+                                            if (victimTabs.isEmpty()) {
                                                 Text(
                                                     "No history yet. Run Probe to collect data.",
                                                     style = MaterialTheme.typography.bodyMedium,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             } else {
+                                                TabRow(
+                                                    selectedTabIndex = victimTabs.indexOf(currentVictimTab),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    victimTabs.forEach { victim ->
+                                                        Tab(
+                                                            selected = victim == currentVictimTab,
+                                                            onClick = {
+                                                                selectedHistoryVictim = victim
+                                                                victimInput = victim
+                                                            },
+                                                            text = { Text(victim.ifBlank { "(unknown)" }) }
+                                                        )
+                                                    }
+                                                }
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.End
+                                                ) {
+                                                    val hasCurrent = currentVictimTab != null && historyByVictim[currentVictimTab] != null
+                                                    TextButton(
+                                                        onClick = {
+                                                            currentVictimTab?.let { key ->
+                                                                scope.launch(Dispatchers.IO) {
+                                                                    db.historyDao().clearForVictim(key)
+                                                                }
+                                                                historyByVictim.remove(key)
+                                                                selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+                                                            }
+                                                        },
+                                                        enabled = hasCurrent
+                                                    ) {
+                                                        Text("Clear this victim")
+                                                    }
+                                                }
+                                                val list = currentVictimTab?.let { historyByVictim[it] } ?: emptyList()
                                                 LazyColumn(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .heightIn(min = 120.dp, max = 320.dp)
                                                 ) {
-                                                    itemsIndexed(history) { idx, item ->
+                                                    itemsIndexed(list) { idx, item ->
                                                         Column(
                                                             modifier = Modifier
                                                                 .fillMaxWidth()
                                                                 .clickable {
-                                                                cellLocation = item.lat?.let { latVal ->
-                                                                    item.lon?.let { lonVal ->
-                                                                        CellLocationResult(latVal, lonVal, item.accuracy)
+                                                                    victimInput = item.victim
+                                                                    cellLocation = item.lat?.let { latVal ->
+                                                                        item.lon?.let { lonVal ->
+                                                                            CellLocationResult(latVal, lonVal, item.accuracy)
+                                                                        }
+                                                                    }
+                                                                    mccInput = item.mcc.toString()
+                                                                    mncInput = item.mnc.toString()
+                                                                    lacInput = item.lac.toString()
+                                                                    cidInput = item.cid.toString()
+                                                                    selectedTab = 0
+                                                                    scope.launch {
+                                                                        // Scroll to bottom of probe tab (map)
+                                                                        probeColumnScrollState.animateScrollTo(probeColumnScrollState.maxValue)
                                                                     }
                                                                 }
-                                                                mccInput = item.mcc.toString()
-                                                                mncInput = item.mnc.toString()
-                                                                lacInput = item.lac.toString()
-                                                                cidInput = item.cid.toString()
-                                                                selectedTab = 0
-                                                                scope.launch {
-                                                                    // Scroll to bottom of probe tab (map)
-                                                                    probeColumnScrollState.animateScrollTo(probeColumnScrollState.maxValue)
-                                                                }
-                                                            }
-                                                            .padding(vertical = 8.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                                    ) {
+                                                                .padding(vertical = 8.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                        ) {
                                                             Text(
                                                                 "MCC=${item.mcc}, MNC=${item.mnc}, LAC=${item.lac}, CID=${item.cid}",
                                                                 style = MaterialTheme.typography.bodyMedium
@@ -839,7 +939,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                                 )
                                                             }
-                                                            if (idx < history.lastIndex) {
+                                                            if (idx < list.lastIndex) {
                                                                 HorizontalDivider()
                                                             }
                                                         }

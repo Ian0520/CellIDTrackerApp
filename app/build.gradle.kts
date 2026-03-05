@@ -1,7 +1,10 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("kotlin-kapt")
 }
 
 android {
@@ -18,10 +21,13 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Load Google API key from local (ignored) properties to avoid checking it into VCS.
-        val googleApiKey: String = (
-            gradleLocalProperties(rootDir).getProperty("GOOGLE_API_KEY")
-                ?: project.findProperty("GOOGLE_API_KEY") as? String
-            ) ?: error("GOOGLE_API_KEY not set in local.properties or Gradle properties")
+        val localProps = Properties().apply {
+            val file = File(rootDir, "local.properties")
+            if (file.exists()) file.inputStream().use { load(it) }
+        }
+        val googleApiKey: String = providers.gradleProperty("GOOGLE_API_KEY").orNull
+            ?: localProps.getProperty("GOOGLE_API_KEY")
+            ?: error("GOOGLE_API_KEY not set in local.properties or Gradle properties")
         buildConfigField("String", "GOOGLE_API_KEY", "\"$googleApiKey\"")
     }
 
@@ -43,6 +49,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -82,6 +89,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.osmdroid:osmdroid-android:6.1.14") 
+    implementation("org.osmdroid:osmdroid-android:6.1.14")
+
+    // Room
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
 }
-import com.android.build.gradle.internal.cxx.configure.gradleLocalProperties
