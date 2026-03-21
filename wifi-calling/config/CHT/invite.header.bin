@@ -18,7 +18,6 @@ Content-Type: application/sdp
 Supported: timer, 100rel, precondition, sec-agree
 User-Agent: Samsung IMS 6.0 G950FXXU3CRGH
 Security-Verify: ipsec-3gpp;q=0.5;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c=2359252967;spi-s=3981454521;port-c=7807;port-s=7777
-Privacy: header
 P-Preferred-Identity: <sip:<CALLER_ID>@ims.mnc092.mcc466.3gppnetwork.org>
 Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
 P-Early-Media: supported

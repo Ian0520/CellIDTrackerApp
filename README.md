@@ -40,6 +40,8 @@ Use your NDK toolchain to rebuild and copy the binary into app assets. Example f
 ```bash
 export NDK=$HOME/android-ndk-r25
 cd wifi-calling
+# Sync config from the single source of truth (app assets) into wifi-calling/config
+./sync-config.sh
 cmake -S all -B build \
   -D CMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
   -D ANDROID_PLATFORM=android-29 \

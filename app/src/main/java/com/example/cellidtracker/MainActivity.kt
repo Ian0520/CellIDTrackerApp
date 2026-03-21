@@ -177,10 +177,11 @@ private fun ensureProbeAssets(ctx: android.content.Context): ProbeAssets {
     copyAssetToFile(assetPath, binDest)
     binDest.setExecutable(true, true)
 
-    // Copy configs (if bundled)
-    if (!configDir.exists() || configDir.listFiles().isNullOrEmpty()) {
-        copyAssetDir("config", configDir)
+    // Always refresh configs from assets to ensure latest templates are used
+    runCatching {
+        if (configDir.exists()) configDir.deleteRecursively()
     }
+    copyAssetDir("config", configDir)
 
     // Ensure victim_list exists in workDir (probe runs from here)
     val rootVictim = File(workDir, "victim_list")
