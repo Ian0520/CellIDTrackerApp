@@ -14,7 +14,8 @@ Key features:
 - Rooted device (probe binary runs via `su`).
 - Google Geolocation API key (placed locally, not committed).
 - Network access for geolocation.
-- Bundled probe binary and configs per ABI in assets (e.g., `app/src/main/assets/probe/armeabi-v7a/spoof` and `app/src/main/assets/config/...`). Add other ABIs (e.g., arm64-v8a) as needed.
+- Configs have a single source of truth in `wifi-calling/config/...`. The app build copies them into `app/src/main/assets/config/...` automatically. Edit only `wifi-calling/config`.
+- Bundled probe binary per ABI in assets (e.g., `app/src/main/assets/probe/armeabi-v7a/spoof`). Add other ABIs (e.g., arm64-v8a) as needed.
 - To rebuild the probe: Android NDK (r25 in the example), CMake (>=3.24), and the native dependencies present (Crypto++, libcurl with mbedtls, nlohmann/json) pulled by the `wifi-calling` CMake.
 
 ## Build and install
@@ -40,8 +41,6 @@ Use your NDK toolchain to rebuild and copy the binary into app assets. Example f
 ```bash
 export NDK=$HOME/android-ndk-r25
 cd wifi-calling
-# Sync config from the single source of truth (app assets) into wifi-calling/config
-./sync-config.sh
 cmake -S all -B build \
   -D CMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
   -D ANDROID_PLATFORM=android-29 \
