@@ -57,6 +57,16 @@ android {
     }
 }
 
+// Sync configs from native source (wifi-calling/config) into assets before build
+val syncConfigs by tasks.registering(Copy::class) {
+    from("${rootDir}/wifi-calling/config")
+    into("${projectDir}/src/main/assets/config")
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(syncConfigs)
+}
+
 dependencies {
     // 基礎
     implementation("androidx.core:core-ktx:1.12.0")
