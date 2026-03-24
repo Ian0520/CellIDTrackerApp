@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import android.os.Build
 import android.content.Context
+import android.view.WindowManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -355,6 +356,17 @@ class MainActivity : ComponentActivity() {
                 var lastQueriedCid by remember { mutableStateOf<Int?>(null) }
 
                 val db = remember { HistoryDatabase.getInstance(ctx) }
+
+                DisposableEffect(isRootRunning, isIntercarrierRunning) {
+                    if (isRootRunning || isIntercarrierRunning) {
+                        this@MainActivity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        this@MainActivity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                    onDispose {
+                        this@MainActivity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
 
                 LaunchedEffect(Unit) {
                     withContext(Dispatchers.IO) {
