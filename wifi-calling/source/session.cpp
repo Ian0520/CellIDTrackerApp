@@ -446,6 +446,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
   else if (status == 486 || status == 500 || status == 408) {
     // Busy
     currentSipState = SipState::BUSY;
+    state.retryImmediate = true;
   }
   else if (status == 487 ) {
     // Request Terminated
