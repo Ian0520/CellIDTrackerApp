@@ -38,15 +38,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import android.os.Build
-import java.nio.file.Files
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class ParsedCellFromLog(
     val mcc: Int,
@@ -64,7 +67,9 @@ data class ProbeHistory(
     val lon: Double?,
     val accuracy: Double?,
     val timestampMillis: Long,
-    val victim: String
+    val victim: String,
+    val towersCount: Int,
+    val towersJson: String
 )
 
 private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
@@ -77,7 +82,9 @@ private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
         lon = lon,
         accuracy = accuracy,
         timestampMillis = timestampMillis,
-        victim = victim
+        victim = victim,
+        towersCount = towersCount,
+        towersJson = towersJson
     )
 
 private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
@@ -90,8 +97,112 @@ private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
         lat = lat,
         lon = lon,
         accuracy = accuracy,
-        timestampMillis = timestampMillis
+        timestampMillis = timestampMillis,
+        towersCount = towersCount,
+        towersJson = towersJson
     )
+
+private fun currentVictimFromList(workDir: File): String {
+    return try {
+        File(workDir, "victim_list")
+            .takeIf { it.exists() }
+            ?.readLines()
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+private fun encodeTowers(towers: List<CellTowerParams>): String =
+    JSONArray().apply {
+        towers.forEach { t ->
+            put(
+                JSONObject()
+                    .put("mcc", t.mcc)
+                    .put("mnc", t.mnc)
+                    .put("lac", t.lac)
+                    .put("cid", t.cid)
+                    .put("radio", t.radioType)
+            )
+        }
+    }.toString()
+
+private fun decodeTowers(json: String): List<CellTowerParams> =
+    runCatching {
+        val arr = JSONArray(json)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(
+                    CellTowerParams(
+                        mcc = o.optInt("mcc"),
+                        mnc = o.optInt("mnc"),
+                        lac = o.optInt("lac"),
+                        cid = o.optInt("cid"),
+                        radioType = o.optString("radio", "lte")
+                    )
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
+
+suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withContext(Dispatchers.IO) {
+    val all = db.historyDao().getAll()
+    val arr = JSONArray()
+    all.forEach { e ->
+        arr.put(
+            JSONObject()
+                .put("victim", e.victim)
+                .put("mcc", e.mcc)
+                .put("mnc", e.mnc)
+                .put("lac", e.lac)
+                .put("cid", e.cid)
+                .put("lat", e.lat)
+                .put("lon", e.lon)
+                .put("accuracy", e.accuracy)
+                .put("timestampMillis", e.timestampMillis)
+                .put("towersCount", e.towersCount)
+                .put("towers", JSONArray(e.towersJson))
+        )
+    }
+    val outFile = File(ctx.getExternalFilesDir(null), "probe_history.json")
+    outFile.writeText(arr.toString(2))
+    outFile
+}
+
+suspend fun selectBestLocation(
+    towers: List<CellTowerParams>
+): Pair<Result<CellLocationResult>, List<CellTowerParams>> {
+    if (towers.isEmpty()) return Result.failure<CellLocationResult>(IllegalArgumentException("No towers")).let { it to emptyList() }
+    var best: CellLocationResult? = null
+    var bestPayload: List<CellTowerParams> = emptyList()
+    var firstFailure: Result<CellLocationResult>? = null
+    // Try each tower as the first element to influence Google weighting
+    for (i in towers.indices) {
+        val rotated = listOf(towers[i]) + towers.filterIndexed { idx, _ -> idx != i }
+        val res = GoogleGeolocationClient.queryByCells(rotated)
+        if (res.isSuccess) {
+            val loc = res.getOrNull()
+            if (loc != null) {
+                val acc = loc.range ?: Double.MAX_VALUE
+                val bestAcc = best?.range ?: Double.MAX_VALUE
+                if (best == null || acc < bestAcc) {
+                    best = loc
+                    bestPayload = rotated
+                }
+            }
+        } else if (firstFailure == null) {
+            firstFailure = res
+        }
+    }
+    return if (best != null) {
+        Result.success(best!!) to bestPayload
+    } else {
+        (firstFailure ?: Result.failure(Exception("All geolocation attempts failed"))) to towers
+    }
+}
 
 /** Try to extract mcc/mnc/lac/cellid from a stdout line. */
 private fun tryParseCellFromStdoutLine(
@@ -523,16 +634,14 @@ class MainActivity : ComponentActivity() {
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 """.trimIndent()
 
-                                                                                val result = withContext(Dispatchers.IO) {
-                                                                                    GoogleGeolocationClient.queryByCells(
-                                                                                        towers = recentTowers.toList()
-                                                                                    )
+                                                                                val (result, payloadUsed) = withContext(Dispatchers.IO) {
+                                                                                    selectBestLocation(recentTowers.toList())
                                                                                 }
 
                                                                                     output += result.fold(
                                                                                         onSuccess = { loc ->
                                                                                             cellLocation = loc
-                                                                                            val victimKey = victimInput.trim().ifBlank { "(unknown)" }
+                                                                                            val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
                                                                                             val entry = ProbeHistory(
                                                                                                 parsed.mcc,
                                                                                                 parsed.mnc,
@@ -542,7 +651,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 loc.lon,
                                                                                                 loc.range,
                                                                                                 System.currentTimeMillis(),
-                                                                                                victimKey
+                                                                                                victimKey,
+                                                                                                payloadUsed.size,
+                                                                                                encodeTowers(payloadUsed)
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -561,7 +672,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                         },
                                                                                         onFailure = { e ->
                                                                                             cellLocation = null
-                                                                                            val victimKey = victimInput.trim().ifBlank { "(unknown)" }
+                                                                                            val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
                                                                                             val entry = ProbeHistory(
                                                                                                 parsed.mcc,
                                                                                                 parsed.mnc,
@@ -571,7 +682,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 null,
                                                                                                 null,
                                                                                                 System.currentTimeMillis(),
-                                                                                                victimKey
+                                                                                                victimKey,
+                                                                                                payloadUsed.size,
+                                                                                                encodeTowers(payloadUsed)
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -864,22 +977,36 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                     modifier = Modifier.fillMaxWidth(),
                                                     horizontalArrangement = Arrangement.End
                                                 ) {
-                                                    val hasCurrent = currentVictimTab != null && historyByVictim[currentVictimTab] != null
-                                                    TextButton(
-                                                        onClick = {
-                                                            currentVictimTab?.let { key ->
-                                                                scope.launch(Dispatchers.IO) {
-                                                                    db.historyDao().clearForVictim(key)
-                                                                }
-                                                                historyByVictim.remove(key)
-                                                                selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+                                                val hasCurrent = currentVictimTab != null && historyByVictim[currentVictimTab] != null
+                                                TextButton(
+                                                    onClick = {
+                                                        currentVictimTab?.let { key ->
+                                                            scope.launch(Dispatchers.IO) {
+                                                                db.historyDao().clearForVictim(key)
                                                             }
-                                                        },
-                                                        enabled = hasCurrent
-                                                    ) {
-                                                        Text("Clear this victim")
-                                                    }
+                                                            historyByVictim.remove(key)
+                                                            selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+                                                        }
+                                                    },
+                                                    enabled = hasCurrent
+                                                ) {
+                                                    Text("Clear this victim")
                                                 }
+                                                TextButton(
+                                                    onClick = {
+                                                        scope.launch {
+                                                            try {
+                                                                val file = exportHistoryToFile(ctx, db)
+                                                                snackbarHostState.showSnackbar("Exported to: ${file.absolutePath}")
+                                                            } catch (e: Exception) {
+                                                                snackbarHostState.showSnackbar("Export failed: ${e.message ?: e}")
+                                                            }
+                                                        }
+                                                    }
+                                                ) {
+                                                    Text("Export all to file")
+                                                }
+                                            }
                                                 val list = currentVictimTab?.let { historyByVictim[it] } ?: emptyList()
                                                 LazyColumn(
                                                     modifier = Modifier
@@ -924,6 +1051,22 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )
+                                                            Text(
+                                                                "Towers used: ${item.towersCount}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                            val towersStr = decodeTowers(item.towersJson)
+                                                                .joinToString(limit = 5, separator = "\n") { t ->
+                                                                    "  - mcc=${t.mcc}, mnc=${t.mnc}, lac=${t.lac}, cid=${t.cid}"
+                                                                }
+                                                            if (towersStr.isNotEmpty()) {
+                                                                Text(
+                                                                    "Towers:\n$towersStr",
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                )
+                                                            }
                                                             if (item.lat != null && item.lon != null) {
                                                                 Text(
                                                                     buildString {
