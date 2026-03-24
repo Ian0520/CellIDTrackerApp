@@ -50,3 +50,13 @@ cmake --build build --config Release
 cp bin/spoof ../app/src/main/assets/probe/armeabi-v7a/
 ```
 Repeat with `ANDROID_ABI=arm64-v8a` and copy to `app/src/main/assets/probe/arm64-v8a/` for 64-bit devices. Then rebuild the APK so the updated binary is packaged.
+
+## Export probe history to a file
+1. In the app, open the **History** tab and tap **Export all to file**.  
+2. The app writes a JSON file to its external files directory:  
+   `Android/data/com.example.cellidtracker/files/probe_history.json`
+3. Pull it to your computer (USB + adb):  
+   ```bash
+   adb pull /sdcard/Android/data/com.example.cellidtracker/files/probe_history.json .
+   ```
+The JSON contains each entry’s victim, mcc/mnc/lac/cid, lat/lon/accuracy, timestamp, towersCount, and the full towers array used for that lookup.

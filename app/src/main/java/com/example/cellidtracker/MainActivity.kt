@@ -38,12 +38,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import android.os.Build
-import java.nio.file.Files
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -146,6 +147,30 @@ private fun decodeTowers(json: String): List<CellTowerParams> =
             }
         }
     }.getOrDefault(emptyList())
+
+suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withContext(Dispatchers.IO) {
+    val all = db.historyDao().getAll()
+    val arr = JSONArray()
+    all.forEach { e ->
+        arr.put(
+            JSONObject()
+                .put("victim", e.victim)
+                .put("mcc", e.mcc)
+                .put("mnc", e.mnc)
+                .put("lac", e.lac)
+                .put("cid", e.cid)
+                .put("lat", e.lat)
+                .put("lon", e.lon)
+                .put("accuracy", e.accuracy)
+                .put("timestampMillis", e.timestampMillis)
+                .put("towersCount", e.towersCount)
+                .put("towers", JSONArray(e.towersJson))
+        )
+    }
+    val outFile = File(ctx.getExternalFilesDir(null), "probe_history.json")
+    outFile.writeText(arr.toString(2))
+    outFile
+}
 
 suspend fun selectBestLocation(
     towers: List<CellTowerParams>
@@ -952,22 +977,36 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                     modifier = Modifier.fillMaxWidth(),
                                                     horizontalArrangement = Arrangement.End
                                                 ) {
-                                                    val hasCurrent = currentVictimTab != null && historyByVictim[currentVictimTab] != null
-                                                    TextButton(
-                                                        onClick = {
-                                                            currentVictimTab?.let { key ->
-                                                                scope.launch(Dispatchers.IO) {
-                                                                    db.historyDao().clearForVictim(key)
-                                                                }
-                                                                historyByVictim.remove(key)
-                                                                selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+                                                val hasCurrent = currentVictimTab != null && historyByVictim[currentVictimTab] != null
+                                                TextButton(
+                                                    onClick = {
+                                                        currentVictimTab?.let { key ->
+                                                            scope.launch(Dispatchers.IO) {
+                                                                db.historyDao().clearForVictim(key)
                                                             }
-                                                        },
-                                                        enabled = hasCurrent
-                                                    ) {
-                                                        Text("Clear this victim")
-                                                    }
+                                                            historyByVictim.remove(key)
+                                                            selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+                                                        }
+                                                    },
+                                                    enabled = hasCurrent
+                                                ) {
+                                                    Text("Clear this victim")
                                                 }
+                                                TextButton(
+                                                    onClick = {
+                                                        scope.launch {
+                                                            try {
+                                                                val file = exportHistoryToFile(ctx, db)
+                                                                snackbarHostState.showSnackbar("Exported to: ${file.absolutePath}")
+                                                            } catch (e: Exception) {
+                                                                snackbarHostState.showSnackbar("Export failed: ${e.message ?: e}")
+                                                            }
+                                                        }
+                                                    }
+                                                ) {
+                                                    Text("Export all to file")
+                                                }
+                                            }
                                                 val list = currentVictimTab?.let { historyByVictim[it] } ?: emptyList()
                                                 LazyColumn(
                                                     modifier = Modifier
