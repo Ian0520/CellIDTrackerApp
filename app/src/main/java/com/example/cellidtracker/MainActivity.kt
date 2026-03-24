@@ -64,7 +64,8 @@ data class ProbeHistory(
     val lon: Double?,
     val accuracy: Double?,
     val timestampMillis: Long,
-    val victim: String
+    val victim: String,
+    val towersCount: Int
 )
 
 private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
@@ -77,7 +78,8 @@ private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
         lon = lon,
         accuracy = accuracy,
         timestampMillis = timestampMillis,
-        victim = victim
+        victim = victim,
+        towersCount = towersCount
     )
 
 private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
@@ -90,8 +92,22 @@ private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
         lat = lat,
         lon = lon,
         accuracy = accuracy,
-        timestampMillis = timestampMillis
+        timestampMillis = timestampMillis,
+        towersCount = towersCount
     )
+
+private fun currentVictimFromList(workDir: File): String {
+    return try {
+        File(workDir, "victim_list")
+            .takeIf { it.exists() }
+            ?.readLines()
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
+}
 
 /** Try to extract mcc/mnc/lac/cellid from a stdout line. */
 private fun tryParseCellFromStdoutLine(
@@ -532,7 +548,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                     output += result.fold(
                                                                                         onSuccess = { loc ->
                                                                                             cellLocation = loc
-                                                                                            val victimKey = victimInput.trim().ifBlank { "(unknown)" }
+                                                                                            val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
                                                                                             val entry = ProbeHistory(
                                                                                                 parsed.mcc,
                                                                                                 parsed.mnc,
@@ -542,7 +558,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 loc.lon,
                                                                                                 loc.range,
                                                                                                 System.currentTimeMillis(),
-                                                                                                victimKey
+                                                                                                victimKey,
+                                                                                                recentTowers.size
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -561,7 +578,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                         },
                                                                                         onFailure = { e ->
                                                                                             cellLocation = null
-                                                                                            val victimKey = victimInput.trim().ifBlank { "(unknown)" }
+                                                                                            val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
                                                                                             val entry = ProbeHistory(
                                                                                                 parsed.mcc,
                                                                                                 parsed.mnc,
@@ -571,7 +588,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 null,
                                                                                                 null,
                                                                                                 System.currentTimeMillis(),
-                                                                                                victimKey
+                                                                                                victimKey,
+                                                                                                recentTowers.size
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -921,6 +939,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                             )
                                                             Text(
                                                                 "Victim: ${item.victim.ifBlank { "(unknown)" }}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                            Text(
+                                                                "Towers used: ${item.towersCount}",
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )

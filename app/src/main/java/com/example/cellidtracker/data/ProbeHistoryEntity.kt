@@ -14,5 +14,6 @@ data class ProbeHistoryEntity(
     val lat: Double?,
     val lon: Double?,
     val accuracy: Double?,
-    val timestampMillis: Long
+    val timestampMillis: Long,
+    val towersCount: Int
 )
