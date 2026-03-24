@@ -38,6 +38,11 @@ struct State {
   
   int maxSessionProgressOfCarrier;
 
+  // Track whether a 487 (Request Terminated) was received and still needs ACK
+  bool needAck487{false};
+  // Signal to immediately retry after 486/500/408
+  bool retryImmediate{false};
+
   bool ack;
   bool psh;
   bool useESP;
