@@ -47,6 +47,8 @@ import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class ParsedCellFromLog(
     val mcc: Int,
@@ -65,7 +67,8 @@ data class ProbeHistory(
     val accuracy: Double?,
     val timestampMillis: Long,
     val victim: String,
-    val towersCount: Int
+    val towersCount: Int,
+    val towersJson: String
 )
 
 private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
@@ -79,7 +82,8 @@ private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
         accuracy = accuracy,
         timestampMillis = timestampMillis,
         victim = victim,
-        towersCount = towersCount
+        towersCount = towersCount,
+        towersJson = towersJson
     )
 
 private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
@@ -93,7 +97,8 @@ private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
         lon = lon,
         accuracy = accuracy,
         timestampMillis = timestampMillis,
-        towersCount = towersCount
+        towersCount = towersCount,
+        towersJson = towersJson
     )
 
 private fun currentVictimFromList(workDir: File): String {
@@ -106,6 +111,71 @@ private fun currentVictimFromList(workDir: File): String {
             .orEmpty()
     } catch (_: Exception) {
         ""
+    }
+}
+
+private fun encodeTowers(towers: List<CellTowerParams>): String =
+    JSONArray().apply {
+        towers.forEach { t ->
+            put(
+                JSONObject()
+                    .put("mcc", t.mcc)
+                    .put("mnc", t.mnc)
+                    .put("lac", t.lac)
+                    .put("cid", t.cid)
+                    .put("radio", t.radioType)
+            )
+        }
+    }.toString()
+
+private fun decodeTowers(json: String): List<CellTowerParams> =
+    runCatching {
+        val arr = JSONArray(json)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(
+                    CellTowerParams(
+                        mcc = o.optInt("mcc"),
+                        mnc = o.optInt("mnc"),
+                        lac = o.optInt("lac"),
+                        cid = o.optInt("cid"),
+                        radioType = o.optString("radio", "lte")
+                    )
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
+
+suspend fun selectBestLocation(
+    towers: List<CellTowerParams>
+): Pair<Result<CellLocationResult>, List<CellTowerParams>> {
+    if (towers.isEmpty()) return Result.failure<CellLocationResult>(IllegalArgumentException("No towers")).let { it to emptyList() }
+    var best: CellLocationResult? = null
+    var bestPayload: List<CellTowerParams> = emptyList()
+    var firstFailure: Result<CellLocationResult>? = null
+    // Try each tower as the first element to influence Google weighting
+    for (i in towers.indices) {
+        val rotated = listOf(towers[i]) + towers.filterIndexed { idx, _ -> idx != i }
+        val res = GoogleGeolocationClient.queryByCells(rotated)
+        if (res.isSuccess) {
+            val loc = res.getOrNull()
+            if (loc != null) {
+                val acc = loc.range ?: Double.MAX_VALUE
+                val bestAcc = best?.range ?: Double.MAX_VALUE
+                if (best == null || acc < bestAcc) {
+                    best = loc
+                    bestPayload = rotated
+                }
+            }
+        } else if (firstFailure == null) {
+            firstFailure = res
+        }
+    }
+    return if (best != null) {
+        Result.success(best!!) to bestPayload
+    } else {
+        (firstFailure ?: Result.failure(Exception("All geolocation attempts failed"))) to towers
     }
 }
 
@@ -539,10 +609,8 @@ class MainActivity : ComponentActivity() {
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 """.trimIndent()
 
-                                                                                val result = withContext(Dispatchers.IO) {
-                                                                                    GoogleGeolocationClient.queryByCells(
-                                                                                        towers = recentTowers.toList()
-                                                                                    )
+                                                                                val (result, payloadUsed) = withContext(Dispatchers.IO) {
+                                                                                    selectBestLocation(recentTowers.toList())
                                                                                 }
 
                                                                                     output += result.fold(
@@ -559,7 +627,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 loc.range,
                                                                                                 System.currentTimeMillis(),
                                                                                                 victimKey,
-                                                                                                recentTowers.size
+                                                                                                payloadUsed.size,
+                                                                                                encodeTowers(payloadUsed)
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -589,7 +658,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 null,
                                                                                                 System.currentTimeMillis(),
                                                                                                 victimKey,
-                                                                                                recentTowers.size
+                                                                                                payloadUsed.size,
+                                                                                                encodeTowers(payloadUsed)
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -947,6 +1017,17 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )
+                                                            val towersStr = decodeTowers(item.towersJson)
+                                                                .joinToString(limit = 5, separator = "\n") { t ->
+                                                                    "  - mcc=${t.mcc}, mnc=${t.mnc}, lac=${t.lac}, cid=${t.cid}"
+                                                                }
+                                                            if (towersStr.isNotEmpty()) {
+                                                                Text(
+                                                                    "Towers:\n$towersStr",
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                )
+                                                            }
                                                             if (item.lat != null && item.lon != null) {
                                                                 Text(
                                                                     buildString {

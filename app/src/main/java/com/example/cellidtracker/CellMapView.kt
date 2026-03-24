@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import android.graphics.Color
+import kotlin.math.abs
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -42,6 +43,11 @@ fun CellMapView(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     // 記住覆蓋層，方便更新/移除
     var accuracyOverlay by remember { mutableStateOf<Polygon?>(null) }
+    // 記住上次套用的座標/精度，避免每次 recomposition 都重設中心與縮放（會讓使用者無法拖/縮放）
+    var lastLat by remember { mutableStateOf<Double?>(null) }
+    var lastLon by remember { mutableStateOf<Double?>(null) }
+    var lastAcc by remember { mutableStateOf<Double?>(null) }
+    var hasLocation by remember { mutableStateOf(false) }
 
     AndroidView(
         modifier = modifier.fillMaxSize(),
@@ -61,7 +67,14 @@ fun CellMapView(
         },
         update = { view ->
             // 每次 lat/lon 有改變就更新中心點
-            if (lat != null && lon != null) {
+            fun changed(a: Double?, b: Double?): Boolean {
+                if (a == null || b == null) return true
+                return abs(a - b) > 1e-6
+            }
+            val shouldUpdate = (lat != null && lon != null) &&
+                (changed(lat, lastLat) || changed(lon, lastLon) || changed(accuracy, lastAcc))
+
+            if (lat != null && lon != null && shouldUpdate) {
                 val point = GeoPoint(lat, lon)
                 // 調整縮放，確保精度圈可以落在可視範圍內
                 val zoom = when {
@@ -90,11 +103,20 @@ fun CellMapView(
                     accuracyOverlay = circle
                     view.invalidate()
                 }
+                lastLat = lat
+                lastLon = lon
+                lastAcc = accuracy
+                hasLocation = true
             } else {
-                // 沒座標就維持預設：可以視需要移回台北
-                val defaultPoint = GeoPoint(25.033968, 121.564468)
-                view.controller.setZoom(12.0)
-                view.controller.setCenter(defaultPoint)
+                // 如果尚未有任何定位結果，第一次顯示預設點；之後不再強制重置，避免來回閃爍
+                if (!hasLocation) {
+                    val defaultPoint = GeoPoint(25.033968, 121.564468)
+                    view.controller.setZoom(12.0)
+                    view.controller.setCenter(defaultPoint)
+                    lastLat = null
+                    lastLon = null
+                    lastAcc = null
+                }
             }
         }
     )

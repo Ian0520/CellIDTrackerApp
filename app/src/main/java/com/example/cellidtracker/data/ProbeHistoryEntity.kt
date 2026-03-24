@@ -15,5 +15,6 @@ data class ProbeHistoryEntity(
     val lon: Double?,
     val accuracy: Double?,
     val timestampMillis: Long,
-    val towersCount: Int
+    val towersCount: Int,
+    val towersJson: String
 )
