@@ -1,4 +1,4 @@
-# CellIDTracker
+# Location Tracking Android App Exploiting IMS Messaging Vulnerabilities
 
 ## About the app
 CellIDTracker is an Android app that drives a bundled (root-required) probe binary to discover cell IDs, looks up their location via Google Geolocation, and visualizes the result on an OpenStreetMap (osmdroid) map with an accuracy circle.
