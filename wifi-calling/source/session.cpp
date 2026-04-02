@@ -21,6 +21,7 @@
 #include <thread>
 #include <utility>
 #include <fstream>
+#include <fstream>
 
 #include "sip.h"
 #include "application.h"
@@ -410,6 +411,12 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       if (state.t_trying.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
         std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+        std::ofstream log("paging_times_v2.csv", std::ios::app);
+        if (log.is_open()) {
+          auto nowSys = std::chrono::system_clock::now();
+          auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(nowSys.time_since_epoch()).count();
+          log << nowMs << ",183," << delta << "\n";
+        }
       } else {
         std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
       }
@@ -424,6 +431,12 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       if (state.t_trying.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
         std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+        std::ofstream log("paging_times_v2.csv", std::ios::app);
+        if (log.is_open()) {
+          auto nowSys = std::chrono::system_clock::now();
+          auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(nowSys.time_since_epoch()).count();
+          log << nowMs << ",180," << delta << "\n";
+        }
       } else {
         std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
       }

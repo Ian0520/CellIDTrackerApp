@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import android.os.Build
 import android.content.Context
 import android.view.WindowManager
+import androidx.compose.material3.Switch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,7 +71,8 @@ data class ProbeHistory(
     val timestampMillis: Long,
     val victim: String,
     val towersCount: Int,
-    val towersJson: String
+    val towersJson: String,
+    val moving: Boolean
 )
 
 private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
@@ -85,7 +87,8 @@ private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
         timestampMillis = timestampMillis,
         victim = victim,
         towersCount = towersCount,
-        towersJson = towersJson
+        towersJson = towersJson,
+        moving = moving
     )
 
 private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
@@ -100,7 +103,8 @@ private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
         accuracy = accuracy,
         timestampMillis = timestampMillis,
         towersCount = towersCount,
-        towersJson = towersJson
+        towersJson = towersJson,
+        moving = moving
     )
 
 private fun currentVictimFromList(workDir: File): String {
@@ -166,6 +170,7 @@ suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withC
                 .put("timestampMillis", e.timestampMillis)
                 .put("towersCount", e.towersCount)
                 .put("towers", JSONArray(e.towersJson))
+                .put("moving", e.moving)
         )
     }
     val outFile = File(ctx.getExternalFilesDir(null), "probe_history.json")
@@ -339,6 +344,7 @@ class MainActivity : ComponentActivity() {
                 var intercarrierStatus by remember { mutableStateOf("Inter-carrier: unknown") }
                 var probeParsedCell by remember { mutableStateOf(false) }
                 var showLog by remember { mutableStateOf(false) }
+                var isMoving by remember { mutableStateOf(false) }
                 val historyByVictim = remember { mutableStateMapOf<String, SnapshotStateList<ProbeHistory>>() }
                 var selectedHistoryVictim by remember { mutableStateOf<String?>(null) }
                 val timeFormatter = remember {
@@ -435,6 +441,13 @@ class MainActivity : ComponentActivity() {
                                                 modifier = Modifier.fillMaxWidth(),
                                                 supportingText = { Text("Replaces /data/local/tmp/victim_list with this number") }
                                             )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text("Moving (for paging test)", style = MaterialTheme.typography.bodyMedium)
+                                                Switch(checked = isMoving, onCheckedChange = { isMoving = it })
+                                            }
                                             Button(
                                                 onClick = {
                                                     val victimNum = victimInput.trim()
@@ -646,8 +659,9 @@ class MainActivity : ComponentActivity() {
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 """.trimIndent()
 
+                                                                                val singleTowerList = listOf(CellTowerParams(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, "lte"))
                                                                                 val (result, payloadUsed) = withContext(Dispatchers.IO) {
-                                                                                    selectBestLocation(recentTowers.toList())
+                                                                                    GoogleGeolocationClient.queryByCells(singleTowerList) to singleTowerList
                                                                                 }
 
                                                                                     output += result.fold(
@@ -664,8 +678,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 loc.range,
                                                                                                 System.currentTimeMillis(),
                                                                                                 victimKey,
-                                                                                                payloadUsed.size,
-                                                                                                encodeTowers(payloadUsed)
+                                                                                                1,
+                                                                                                encodeTowers(payloadUsed),
+                                                                                                isMoving
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -695,8 +710,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 null,
                                                                                                 System.currentTimeMillis(),
                                                                                                 victimKey,
-                                                                                                payloadUsed.size,
-                                                                                                encodeTowers(payloadUsed)
+                                                                                                1,
+                                                                                                encodeTowers(payloadUsed),
+                                                                                                isMoving
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -1060,6 +1076,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                             )
                                                             Text(
                                                                 "Victim: ${item.victim.ifBlank { "(unknown)" }}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                            Text(
+                                                                "Moving: ${if (item.moving) "Yes" else "No"}",
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )
