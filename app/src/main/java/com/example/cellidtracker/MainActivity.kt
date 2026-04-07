@@ -42,6 +42,7 @@ import android.content.Context
 import android.view.WindowManager
 import androidx.compose.material3.Switch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -52,6 +53,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class ParsedCellFromLog(
     val mcc: Int,
@@ -72,7 +74,8 @@ data class ProbeHistory(
     val victim: String,
     val towersCount: Int,
     val towersJson: String,
-    val moving: Boolean
+    val moving: Boolean,
+    val deltaMs: Long?
 )
 
 private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
@@ -88,7 +91,8 @@ private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
         victim = victim,
         towersCount = towersCount,
         towersJson = towersJson,
-        moving = moving
+        moving = moving,
+        deltaMs = deltaMs
     )
 
 private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
@@ -104,7 +108,8 @@ private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
         timestampMillis = timestampMillis,
         towersCount = towersCount,
         towersJson = towersJson,
-        moving = moving
+        moving = moving,
+        deltaMs = deltaMs
     )
 
 private fun currentVictimFromList(workDir: File): String {
@@ -171,6 +176,7 @@ suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withC
                 .put("towersCount", e.towersCount)
                 .put("towers", JSONArray(e.towersJson))
                 .put("moving", e.moving)
+                .put("deltaMs", e.deltaMs)
         )
     }
     val outFile = File(ctx.getExternalFilesDir(null), "probe_history.json")
@@ -337,6 +343,8 @@ class MainActivity : ComponentActivity() {
 
                 var victimInput by remember { mutableStateOf("") }
                 var output by remember { mutableStateOf("Log will appear here.") }
+                val logLines = remember { ArrayDeque<String>() }
+                val logDirty = remember { AtomicBoolean(false) }
                 var isRootRunning by remember { mutableStateOf(false) }
                 var isIntercarrierRunning by remember { mutableStateOf(false) }
                 var userStopRequested by remember { mutableStateOf(false) }
@@ -363,6 +371,21 @@ class MainActivity : ComponentActivity() {
 
                 val db = remember { HistoryDatabase.getInstance(ctx) }
 
+                fun appendLogText(text: String) {
+                    text.lineSequence().forEach { line ->
+                        if (logLines.size >= 1200) {
+                            logLines.removeFirst()
+                        }
+                        logLines.addLast(line)
+                    }
+                    logDirty.set(true)
+                }
+
+                fun replaceLogText(text: String) {
+                    logLines.clear()
+                    appendLogText(text)
+                }
+
                 DisposableEffect(isRootRunning, isIntercarrierRunning) {
                     if (isRootRunning || isIntercarrierRunning) {
                         this@MainActivity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -371,6 +394,19 @@ class MainActivity : ComponentActivity() {
                     }
                     onDispose {
                         this@MainActivity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
+
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        delay(250)
+                        if (logDirty.getAndSet(false)) {
+                            output = if (logLines.isEmpty()) {
+                                "Log will appear here."
+                            } else {
+                                logLines.joinToString("\n")
+                            }
+                        }
                     }
                 }
 
@@ -452,7 +488,7 @@ class MainActivity : ComponentActivity() {
                                                 onClick = {
                                                     val victimNum = victimInput.trim()
                                                     if (victimNum.isEmpty()) {
-                                                        output = "請先在上方輸入 victim number 再新增到 victim_list"
+                                                        replaceLogText("請先在上方輸入 victim number 再新增到 victim_list")
                                                         scope.launch { snackbarHostState.showSnackbar("請先輸入 victim number") }
                                                     } else {
                                                         scope.launch {
@@ -482,7 +518,7 @@ class MainActivity : ComponentActivity() {
                                                                     RootShell.runAsRoot(catCmdConfig)
                                                                 }
 
-                                                                output = buildString {
+                                                                replaceLogText(buildString {
                                                                     appendLine("Append command:")
                                                                     appendLine(appendCmd)
                                                                     appendLine("Exit code: ${appendResult.exitCode}")
@@ -501,7 +537,7 @@ class MainActivity : ComponentActivity() {
                                                                     appendLine()
                                                                     appendLine("----- STDERR (cat config) -----")
                                                                     appendLine(catConfigResult.stderr.ifBlank { "(empty)" })
-                                                                }
+                                                                })
 
                                                                 // New victim: clear recent towers to avoid mixing targets
                                                                 recentTowers.clear()
@@ -513,7 +549,7 @@ class MainActivity : ComponentActivity() {
                                                                 }
                                                                 snackbarHostState.showSnackbar(msg)
                                                             } catch (e: Exception) {
-                                                                output = "Set victim failed: ${e.message ?: e}"
+                                                                replaceLogText("Set victim failed: ${e.message ?: e}")
                                                                 snackbarHostState.showSnackbar("Set victim failed: ${e.message ?: e}")
                                                             }
                                                         }
@@ -610,23 +646,25 @@ class MainActivity : ComponentActivity() {
                                                                 }
                                                                 val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
                                                                 val accumulator = mutableMapOf<String, Int>()
+                                                                var lastProbeDeltaMs: Long? = null
 
-                                                            output = buildString {
+                                                            replaceLogText(buildString {
                                                                 appendLine("Running probe (root)...")
                                                                 appendLine("Command:")
                                                                 appendLine(cmd)
                                                                 appendLine()
                                                                 appendLine("----- STDOUT (stream) -----")
-                                                            }
+                                                            })
                                                             intercarrierStatus = "Inter-carrier: pending"
 
                                                             val exitCode = withContext(Dispatchers.IO) {
                                                                 RootShell.runAsRootStreaming(
                                                                     command = cmd,
                                                                     onStdoutLine = { line ->
-                                                                        output += "\n$line"
+                                                                        appendLogText("\n$line")
                                                                         if (line.contains("[intercarrier]")) {
                                                                             val delta = Regex("delta_ms=([0-9]+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
+                                                                            lastProbeDeltaMs = delta
                                                                             intercarrierStatus = when {
                                                                                 delta == null -> "Inter-carrier: unknown"
                                                                                 delta <= 600 -> "Inter-carrier: Yes (delta=${delta} ms) — This target is Inter-Carrier. Cannot probe."
@@ -653,18 +691,18 @@ class MainActivity : ComponentActivity() {
                                                                             }
 
                                                                             scope.launch {
-                                                                                output += """
+                                                                                appendLogText("""
 
 [Geo] querying Google Geolocation...
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
-""".trimIndent()
+""".trimIndent())
 
                                                                                 val singleTowerList = listOf(CellTowerParams(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid, "lte"))
                                                                                 val (result, payloadUsed) = withContext(Dispatchers.IO) {
                                                                                     GoogleGeolocationClient.queryByCells(singleTowerList) to singleTowerList
                                                                                 }
 
-                                                                                    output += result.fold(
+                                                                                    appendLogText(result.fold(
                                                                                         onSuccess = { loc ->
                                                                                             cellLocation = loc
                                                                                             val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
@@ -680,7 +718,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 victimKey,
                                                                                                 1,
                                                                                                 encodeTowers(payloadUsed),
-                                                                                                isMoving
+                                                                                                isMoving,
+                                                                                                deltaMs = lastProbeDeltaMs
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -712,7 +751,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                                 victimKey,
                                                                                                 1,
                                                                                                 encodeTowers(payloadUsed),
-                                                                                                isMoving
+                                                                                                isMoving,
+                                                                                                deltaMs = lastProbeDeltaMs
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -722,17 +762,17 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                             }
                                                                                             "\n[Google Geolocation] 查詢失敗：${e.message ?: e.toString()}"
                                                                                         }
-                                                                                    )
+                                                                                    ))
                                                                                 }
                                                                             }
                                                                         },
                                                                         onStderrLine = { line ->
-                                                                            output += "\n[ERR] $line"
+                                                                            appendLogText("\n[ERR] $line")
                                                                         }
                                                                     )
                                                                 }
 
-                                                                output += buildString {
+                                                                appendLogText(buildString {
                                                                     appendLine()
                                                                     appendLine()
                                                                     appendLine("----- PROCESS DONE -----")
@@ -740,11 +780,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                     if (userStopRequested) {
                                                                         appendLine("(Stopped by user)")
                                                                     }
-                                                                }
+                                                                })
 
                                                                 snackbarHostState.showSnackbar("Probe finished (exit $exitCode)")
                                                             } catch (e: Exception) {
-                                                                output = "Probe failed: ${e.message ?: e}"
+                                                                replaceLogText("Probe failed: ${e.message ?: e}")
                                                                 snackbarHostState.showSnackbar("Probe failed: ${e.message ?: e}")
                                                             } finally {
                                                                 isRootRunning = false
@@ -761,7 +801,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                     onClick = {
                                                         userStopRequested = true
                                                         RootShell.requestStop()
-                                                        output += "\n\n[Stop requested, waiting for process to terminate...]"
+                                                        appendLogText("\n\n[Stop requested, waiting for process to terminate...]")
                                                     },
                                                     modifier = Modifier
                                                         .weight(1f)
@@ -792,19 +832,19 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                     }
                                                                 }
                                                                 val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
-                                                                output = buildString {
+                                                                replaceLogText(buildString {
                                                                     appendLine("Running inter-carrier test (root)...")
                                                                     appendLine("Command:")
                                                                     appendLine(cmd)
                                                                     appendLine()
                                                                     appendLine("----- STDOUT (stream) -----")
-                                                                }
+                                                                })
                                                                 intercarrierStatus = "Inter-carrier: pending"
                                                                 val exitCode = withContext(Dispatchers.IO) {
                                                                     RootShell.runAsRootStreaming(
                                                                         command = cmd,
                                                                         onStdoutLine = { line ->
-                                                                            output += "\n$line"
+                                                                            appendLogText("\n$line")
                                                                             if (line.contains("[intercarrier]") && !userStopRequested) {
                                                                                 userStopRequested = true
                                                                                 RootShell.requestStop()
@@ -817,20 +857,20 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                             }
                                                                         },
                                                                         onStderrLine = { line ->
-                                                                            output += "\n[ERR] $line"
+                                                                            appendLogText("\n[ERR] $line")
                                                                         }
                                                                     )
                                                                 }
-                                                                output += buildString {
+                                                                appendLogText(buildString {
                                                                     appendLine()
                                                                     appendLine()
                                                                     appendLine("----- PROCESS DONE -----")
                                                                     appendLine("Exit code: $exitCode")
                                                                     if (userStopRequested) appendLine("(Stopped by user)")
-                                                                }
+                                                                })
                                                                 snackbarHostState.showSnackbar("Inter-carrier test finished (exit $exitCode)")
                                                             } catch (e: Exception) {
-                                                                output = "Inter-carrier test failed: ${e.message ?: e}"
+                                                                replaceLogText("Inter-carrier test failed: ${e.message ?: e}")
                                                                 snackbarHostState.showSnackbar("Inter-carrier test failed: ${e.message ?: e}")
                                                             } finally {
                                                                 isIntercarrierRunning = false
@@ -847,7 +887,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                     onClick = {
                                                         userStopRequested = true
                                                         RootShell.requestStop()
-                                                        output += "\n\n[Inter-carrier stop requested, waiting for process to terminate...]"
+                                                        appendLogText("\n\n[Inter-carrier stop requested, waiting for process to terminate...]")
                                                     },
                                                     modifier = Modifier
                                                         .weight(1f)
@@ -942,11 +982,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                     )
                                                 }
                                             } else {
-                                                val preview = output
-                                                    .lineSequence()
-                                                    .toList()
-                                                    .takeLast(6)
-                                                    .joinToString("\n")
+                                                val preview = logLines.takeLast(6).joinToString("\n")
                                                 Text(
                                                     preview,
                                                     fontFamily = FontFamily.Monospace,
@@ -1081,6 +1117,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                             )
                                                             Text(
                                                                 "Moving: ${if (item.moving) "Yes" else "No"}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                            Text(
+                                                                "Delta: ${item.deltaMs?.let { "${it} ms" } ?: "N/A"}",
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )

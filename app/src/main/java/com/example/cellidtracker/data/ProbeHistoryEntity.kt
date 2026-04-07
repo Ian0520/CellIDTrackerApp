@@ -17,5 +17,6 @@ data class ProbeHistoryEntity(
     val timestampMillis: Long,
     val towersCount: Int,
     val towersJson: String,
-    val moving: Boolean
+    val moving: Boolean,
+    val deltaMs: Long?
 )
