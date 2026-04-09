@@ -493,6 +493,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
                       std::to_string(ntohs(session.state.srcPort) - 1));
 
     if (util::context.verbose) std::cout << "Launch call dos to " << targetNumber << std::endl;
+    session.state.t_trying.reset();
+    session.state.t_pr.reset();
     session.encapsulate(
       std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
   }
@@ -520,6 +522,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
       adaptiveCall = false;
 
       if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+      session.state.t_trying.reset();
+      session.state.t_pr.reset();
       session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
       session.currentSipState = SipState::INVITE;
 
@@ -568,6 +572,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
 
             if (!adateToNewEnvironment) {
               if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+              session.state.t_trying.reset();
+              session.state.t_pr.reset();
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
               session.currentSipState = SipState::INVITE;
 
@@ -596,6 +602,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
           back->setFromTag();
 
           if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+          session.state.t_trying.reset();
+          session.state.t_pr.reset();
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
           session.currentSipState = SipState::INVITE;
 
@@ -642,6 +650,8 @@ void Application::MultiCallDetect(pollfd& pfd, int nReady, const std::vector<std
                             std::to_string(ntohs(session.state.srcPort) - 1));
 
     if (util::context.verbose) std::cout << "Launch call detection to " << targetNumber << std::endl;
+    session.state.t_trying.reset();
+    session.state.t_pr.reset();
     session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sips.back()->invite.data()), sips.back()->invite.size()));
   }
   session.currentSipState = SipState::INVITE;
@@ -703,12 +713,10 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
                   session.state.accessNetwork, std::to_string(ntohs(session.state.srcPort) - 1));
 
   if (util::context.verbose) std::cout << "Launch call dos to " << calleeId << std::endl;
+  session.state.t_trying.reset();
+  session.state.t_pr.reset();
   session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.invite.data()), front.invite.size()));
   session.currentSipState = SipState::INVITE;
-  session.state.t_trying.reset();
-  session.state.t_pr.reset();
-  session.state.t_trying.reset();
-  session.state.t_pr.reset();
 
   session.state.sessionProgressCount[calleeId] = 0;
 
@@ -732,6 +740,8 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
         session.state.retryImmediate = false;
         back.setBranch(); back.setCallId(); back.setFromTag();
         if (util::context.verbose > 1) std::cout << "RETRY INVITE (immediate)" << std::endl;
+        session.state.t_trying.reset();
+        session.state.t_pr.reset();
         session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
         session.currentSipState = SipState::INVITE;
       }
@@ -760,6 +770,8 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
             if (util::context.remoteCellIDProber) {
               if (util::context.verbose) std::cout << "\nLaunch call dos to " << calleeId << std::endl;
               if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+              session.state.t_trying.reset();
+              session.state.t_pr.reset();
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
               session.currentSipState = SipState::INVITE;
             }
@@ -815,6 +827,8 @@ void Application::CallDetect(pollfd& pfd, int nReady, const std::string& calleeI
           if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;  
           sip.initialize(session.config.local, session.config.remote, util::context.callerId, calleeId, session.state.secver,
                          session.state.accessNetwork, std::to_string(ntohs(session.state.srcPort) - 1));
+          session.state.t_trying.reset();
+          session.state.t_pr.reset();
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sip.invite.data()), sip.invite.size()));
           session.currentSipState = SipState::INVITE;
           break;

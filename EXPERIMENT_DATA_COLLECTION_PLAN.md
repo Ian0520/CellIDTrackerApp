@@ -236,6 +236,17 @@ The current manual-ground-truth fields are not part of the desired end state.
   - device identifier (manufacturer/model/device)
 - Added startup compatibility migration for previously inconsistent paused schemas:
   - DB migration to v7 recreates experiment tables if v6 legacy shape is detected.
+- Added parser-side duplicate suppression for native log bursts:
+  - app now suppresses repeated identical `mcc/mnc/lac/cid` parses within a short window (10 seconds default)
+  - this directly addresses duplicate history/session entries caused by native retransmissions and immediate retry behavior (e.g., after `500/408/486`)
+- Fixed `deltaMs` binding per saved probe sample:
+  - app now buffers each parsed probe briefly (1.2s) and pairs it with the next `[intercarrier] delta_ms=...` line when available
+  - if no delta marker arrives in the wait window, sample is still stored with `deltaMs = null`
+  - this avoids stale/previous-cycle `deltaMs` values when native logs emit cell fields before intercarrier delta lines
+- Patched native probe timing reset points:
+  - reset `t_trying` / `t_pr` before every fresh INVITE (normal loop + immediate retry paths)
+  - this ensures native can emit a new `[intercarrier] delta_ms=...` per probe cycle instead of only once per long-running process
+  - **requires rebuilding and rebundling the `spoof` binary into app assets to take effect on device**
 
 ### Important Note About Migration
 
@@ -247,14 +258,20 @@ The current manual-ground-truth fields are not part of the desired end state.
 1. Add session management UX polish:
    - show active session elapsed time and sample count
    - add "re-export last completed session" action
-2. Add probe-session validation tests:
+2. Tune and document parser dedupe threshold:
+   - current default: 10 seconds
+   - validate against field logs from each carrier to ensure true distinct probes are not over-suppressed
+3. Tune and document delta pairing wait window:
+   - current default: 1.2 seconds
+   - validate against field logs to ensure marker arrives within window in normal conditions
+4. Add probe-session validation tests:
    - migration test for v5 -> v6 -> v7
    - migration test for inconsistent legacy v6 -> v7
    - export JSON contract test using realistic end-to-end sample sets
-3. Add operator workflow docs:
+5. Add operator workflow docs:
    - exact runbook for sharing `sessionId` with ground-truth app operator
    - pull/export commands and expected file locations
-4. Optional probe-side tags:
+6. Optional probe-side tags:
    - add any additional carrier/environment tags available on probe device to exported sample records.
 
 ### Probe-Side Definition Of "One Session"
@@ -264,6 +281,8 @@ One probe session means one continuous collection run:
 - run probe zero or more times
 - all produced probe samples are attached to the same `sessionId`
 - tap **Stop & export** to finalize and write one `probe_session_<sessionId>.json`
+
+Within one continuous run, repeated identical native outputs from retransmissions/retries are de-duplicated by the app before history/session insertion.
 
 ## Acceptance Criteria
 

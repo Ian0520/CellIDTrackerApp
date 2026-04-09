@@ -21,15 +21,18 @@ import com.example.cellidtracker.history.exportHistoryToFile
 import com.example.cellidtracker.history.toDomain
 import com.example.cellidtracker.history.toEntity
 import com.example.cellidtracker.probe.ParsedCellFromLog
+import com.example.cellidtracker.probe.ProbeParseDeduperState
 import com.example.cellidtracker.probe.ProbeAssets
 import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
+import com.example.cellidtracker.probe.shouldAcceptParsedCell
 import com.example.cellidtracker.probe.tryParseCellFromStdoutLine
 import java.io.File
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -39,6 +42,7 @@ import kotlinx.coroutines.withContext
 private const val INTERCARRIER_MARKER = "[intercarrier]"
 private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
+private const val DELTA_WAIT_MILLIS = 1200L
 
 sealed interface MainUiEvent {
     data class ShowSnackbar(val message: String) : MainUiEvent
@@ -57,7 +61,10 @@ private data class VictimUpdateResult(
 
 private class ProbeStreamState {
     val accumulator = mutableMapOf<String, Int>()
-    var lastDeltaMs: Long? = null
+    val deduper = ProbeParseDeduperState()
+    var pendingAssets: ProbeAssets? = null
+    var pendingParsed: ParsedCellFromLog? = null
+    var pendingDispatchJob: Job? = null
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -391,18 +398,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         appendLogText("\n$line")
         if (line.contains(INTERCARRIER_MARKER)) {
-            streamState.lastDeltaMs = parseDeltaMs(line)
-            intercarrierStatus = buildProbeIntercarrierStatus(streamState.lastDeltaMs)
+            val parsedDeltaMs = parseDeltaMs(line)
+            intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
+            flushPendingProbe(streamState, parsedDeltaMs)
         }
 
         val parsed = tryParseCellFromStdoutLine(line, streamState.accumulator) ?: return
+        val nowMillis = System.currentTimeMillis()
+        if (!shouldAcceptParsedCell(parsed, nowMillis, streamState.deduper)) {
+            return
+        }
         probeParsedCell = true
         applyParsedCell(parsed)
         rememberRecentTower(parsed)
+        queuePendingProbe(streamState, assets, parsed)
+    }
 
-        val deltaSnapshot = streamState.lastDeltaMs
+    private fun queuePendingProbe(
+        streamState: ProbeStreamState,
+        assets: ProbeAssets,
+        parsed: ParsedCellFromLog
+    ) {
+        // If previous parsed data is still pending and no delta arrived for it,
+        // flush it with null to avoid dropping samples.
+        flushPendingProbe(streamState, deltaMs = null)
+
+        streamState.pendingAssets = assets
+        streamState.pendingParsed = parsed
+        streamState.pendingDispatchJob?.cancel()
+        streamState.pendingDispatchJob = viewModelScope.launch {
+            // Native logs may emit delta after cell fields; wait briefly to pair them.
+            delay(DELTA_WAIT_MILLIS)
+            flushPendingProbe(streamState, deltaMs = null)
+        }
+    }
+
+    private fun flushPendingProbe(
+        streamState: ProbeStreamState,
+        deltaMs: Long?
+    ) {
+        val pendingAssets = streamState.pendingAssets ?: return
+        val pendingParsed = streamState.pendingParsed ?: return
+
+        streamState.pendingDispatchJob?.cancel()
+        streamState.pendingDispatchJob = null
+        streamState.pendingAssets = null
+        streamState.pendingParsed = null
+
         viewModelScope.launch {
-            lookupLocationForParsedCell(assets, parsed, deltaSnapshot)
+            lookupLocationForParsedCell(pendingAssets, pendingParsed, deltaMs)
         }
     }
 
