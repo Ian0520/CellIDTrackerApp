@@ -9,7 +9,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.cellidtracker.data.ExperimentSampleEntity
+import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
+import com.example.cellidtracker.experiment.exportExperimentSessionToFile
 import com.example.cellidtracker.geolocation.buildCandidatePayloads
 import com.example.cellidtracker.geolocation.selectBestLocation
 import com.example.cellidtracker.history.ProbeHistory
@@ -24,6 +27,7 @@ import com.example.cellidtracker.probe.ensureProbeAssets
 import com.example.cellidtracker.probe.tryParseCellFromStdoutLine
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -96,14 +100,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var cidInput by mutableStateOf("")
         private set
+    var activeExperimentSessionId by mutableStateOf<String?>(null)
+        private set
+    var activeExperimentStartedAtMillis by mutableStateOf<Long?>(null)
+        private set
 
     private var userStopRequested by mutableStateOf(false)
     private var probeParsedCell by mutableStateOf(false)
-    private var lastQueriedCid by mutableStateOf<Int?>(null)
+    private var activeExperimentSessionDbId: Long? = null
 
     init {
         startLogBufferFlushLoop()
-        viewModelScope.launch { loadHistory() }
+        viewModelScope.launch {
+            loadHistory()
+            loadActiveExperimentSession()
+        }
     }
 
     fun onVictimInputChange(value: String) {
@@ -150,6 +161,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showSnackbar("Exported to: ${file.absolutePath}")
             } catch (e: Exception) {
                 showSnackbar("Export failed: ${e.message ?: e}")
+            }
+        }
+    }
+
+    fun startExperimentSession() {
+        if (activeExperimentSessionDbId != null) {
+            showSnackbar("An experiment session is already active.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val now = System.currentTimeMillis()
+                val session = ExperimentSessionEntity(
+                    sessionId = UUID.randomUUID().toString(),
+                    startedAtMillis = now,
+                    endedAtMillis = null,
+                    createdAtMillis = now,
+                    exportedAtMillis = null
+                )
+                val insertedId = withContext(Dispatchers.IO) {
+                    db.experimentDao().insertSession(session)
+                }
+                activeExperimentSessionDbId = insertedId
+                activeExperimentSessionId = session.sessionId
+                activeExperimentStartedAtMillis = session.startedAtMillis
+                showSnackbar("Experiment session started: ${session.sessionId}")
+            } catch (e: Exception) {
+                showSnackbar("Start session failed: ${e.message ?: e}")
+            }
+        }
+    }
+
+    fun stopExperimentSession() {
+        val sessionDbId = activeExperimentSessionDbId
+        if (sessionDbId == null) {
+            showSnackbar("No active experiment session.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    db.experimentDao().endSession(sessionDbId, System.currentTimeMillis())
+                }
+                val outFile = exportExperimentSessionToFile(appContext, db, sessionDbId)
+                clearActiveExperimentSessionState()
+                showSnackbar("Session exported: ${outFile.absolutePath}")
+            } catch (e: Exception) {
+                loadActiveExperimentSession()
+                showSnackbar("Stop/export failed: ${e.message ?: e}")
             }
         }
     }
@@ -300,7 +362,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun resetProbeRunState() {
         userStopRequested = false
-        lastQueriedCid = null
         probeParsedCell = false
     }
 
@@ -335,9 +396,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val parsed = tryParseCellFromStdoutLine(line, streamState.accumulator) ?: return
-        if (parsed.cid == lastQueriedCid) return
-
-        lastQueriedCid = parsed.cid
         probeParsedCell = true
         applyParsedCell(parsed)
         rememberRecentTower(parsed)
@@ -389,7 +447,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         parsed = parsed,
                         location = location,
                         payloadUsed = payloadUsed,
-                        deltaMs = deltaMs
+                        deltaMs = deltaMs,
+                        geolocationStatus = "success",
+                        geolocationError = null
                     )
                     buildGeoSuccessLog(location)
                 },
@@ -400,7 +460,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         parsed = parsed,
                         location = null,
                         payloadUsed = payloadUsed,
-                        deltaMs = deltaMs
+                        deltaMs = deltaMs,
+                        geolocationStatus = "failure",
+                        geolocationError = error.message ?: error.toString()
                     )
                     "\n[Google Geolocation] 查詢失敗：${error.message ?: error}"
                 }
@@ -413,10 +475,16 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         parsed: ParsedCellFromLog,
         location: CellLocationResult?,
         payloadUsed: List<CellTowerParams>,
-        deltaMs: Long?
+        deltaMs: Long?,
+        geolocationStatus: String,
+        geolocationError: String?
     ) {
         val victimKey = currentVictimFromList(assets.workDir)
             .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
+        val recordedAtMillis = System.currentTimeMillis()
+        val towersJson = encodeTowers(payloadUsed)
+        val movingSnapshot = isMoving
+        val activeSessionSnapshot = activeExperimentSessionDbId
         val entry = ProbeHistory(
             mcc = parsed.mcc,
             mnc = parsed.mnc,
@@ -425,11 +493,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             lat = location?.lat,
             lon = location?.lon,
             accuracy = location?.range,
-            timestampMillis = System.currentTimeMillis(),
+            timestampMillis = recordedAtMillis,
             victim = victimKey,
             towersCount = payloadUsed.size,
-            towersJson = encodeTowers(payloadUsed),
-            moving = isMoving,
+            towersJson = towersJson,
+            moving = movingSnapshot,
             deltaMs = deltaMs
         )
 
@@ -439,6 +507,29 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 
         withContext(Dispatchers.IO) {
             db.historyDao().insert(entry.toEntity())
+            if (activeSessionSnapshot != null) {
+                db.experimentDao().insertSample(
+                    ExperimentSampleEntity(
+                        sessionDbId = activeSessionSnapshot,
+                        recordedAtMillis = recordedAtMillis,
+                        victim = victimKey,
+                        mcc = parsed.mcc,
+                        mnc = parsed.mnc,
+                        lac = parsed.lac,
+                        cid = parsed.cid,
+                        estimatedLat = location?.lat,
+                        estimatedLon = location?.lon,
+                        estimatedAccuracyM = location?.range,
+                        geolocationStatus = geolocationStatus,
+                        geolocationError = geolocationError,
+                        towersCount = payloadUsed.size,
+                        towersJson = towersJson,
+                        moving = movingSnapshot,
+                        deltaMs = deltaMs,
+                        createdAtMillis = recordedAtMillis
+                    )
+                )
+            }
         }
     }
 
@@ -556,6 +647,30 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             historyByVictim[victim] = mutableStateListOf<ProbeHistory>().apply { addAll(list) }
         }
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+    }
+
+    private suspend fun loadActiveExperimentSession() {
+        val active = withContext(Dispatchers.IO) {
+            db.experimentDao().getActiveSession()
+        }
+        applyActiveExperimentSession(active)
+    }
+
+    private fun applyActiveExperimentSession(session: ExperimentSessionEntity?) {
+        if (session == null) {
+            clearActiveExperimentSessionState()
+            return
+        }
+
+        activeExperimentSessionDbId = session.id
+        activeExperimentSessionId = session.sessionId
+        activeExperimentStartedAtMillis = session.startedAtMillis
+    }
+
+    private fun clearActiveExperimentSessionState() {
+        activeExperimentSessionDbId = null
+        activeExperimentSessionId = null
+        activeExperimentStartedAtMillis = null
     }
 
     private fun showSnackbar(message: String) {

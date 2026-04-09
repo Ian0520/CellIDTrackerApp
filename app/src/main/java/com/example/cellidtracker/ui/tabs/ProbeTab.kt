@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -27,11 +26,16 @@ import androidx.compose.foundation.ScrollState
 import com.example.cellidtracker.CellLocationResult
 import com.example.cellidtracker.CellMapView
 import com.example.cellidtracker.ui.components.SmallInfoChip
+import java.time.Instant
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProbeTabContent(
     probeColumnScrollState: ScrollState,
+    activeExperimentSessionId: String?,
+    activeExperimentStartedAtMillis: Long?,
+    onStartExperimentSession: () -> Unit,
+    onStopExperimentSession: () -> Unit,
     victimInput: String,
     onVictimInputChange: (String) -> Unit,
     isMoving: Boolean,
@@ -54,6 +58,58 @@ fun ProbeTabContent(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.verticalScroll(probeColumnScrollState)
     ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Experiment Session", style = MaterialTheme.typography.titleMedium)
+                if (activeExperimentSessionId == null) {
+                    Text(
+                        "No active session. Start one before probing to collect experiment samples.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        "Session ID: $activeExperimentSessionId",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    val startedAtText = activeExperimentStartedAtMillis
+                        ?.let { Instant.ofEpochMilli(it).toString() }
+                        ?: "N/A"
+                    Text(
+                        "Started: $startedAtText",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onStartExperimentSession,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        enabled = activeExperimentSessionId == null
+                    ) { Text("Start session") }
+
+                    Button(
+                        onClick = onStopExperimentSession,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        enabled = activeExperimentSessionId != null
+                    ) { Text("Stop & export") }
+                }
+            }
+        }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.medium,

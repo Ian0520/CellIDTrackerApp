@@ -7,6 +7,7 @@ Key features:
 - Set victim number (written to `victim_list` for the probe).
 - Run the probe (root) and live-parse MCC/MNC/LAC/CID from stdout.
 - Send multiple recent cell towers to Google Geolocation to improve stability/accuracy; show lat/lon/accuracy on the map with an accuracy circle.
+- Start/stop offline experiment sessions (UUID session ID) and auto-export one probe-session JSON per session.
 - View recent probe history (time, victim, cell info, location) and tap an entry to restore its location on the map.
 - View the raw log stream inside the app.
 
@@ -60,3 +61,13 @@ Repeat with `ANDROID_ABI=arm64-v8a` and copy to `app/src/main/assets/probe/arm64
    adb pull /sdcard/Android/data/com.example.cellidtracker/files/probe_history.json .
    ```
 The JSON contains each entry’s victim, mcc/mnc/lac/cid, lat/lon/accuracy, timestamp, towersCount, and the full towers array used for that lookup.
+
+## Offline experiment session export (probe app side)
+1. In the **Probe** tab, tap **Start session**.
+2. Run probing as usual.
+3. Tap **Stop & export** when finished.
+
+The app exports:
+- `Android/data/com.example.cellidtracker/files/experiment_sessions/probe_session_<sessionId>.json`
+
+The exported file includes session metadata (`schemaVersion`, `sessionId`, `startedAtMillis`, `endedAtMillis`, app/device metadata) and probe samples ordered by `recordedAtMillis`.

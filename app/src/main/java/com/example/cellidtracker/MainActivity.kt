@@ -107,6 +107,10 @@ class MainActivity : ComponentActivity() {
                         when (selectedTab) {
                             0 -> ProbeTabContent(
                                 probeColumnScrollState = probeColumnScrollState,
+                                activeExperimentSessionId = viewModel.activeExperimentSessionId,
+                                activeExperimentStartedAtMillis = viewModel.activeExperimentStartedAtMillis,
+                                onStartExperimentSession = viewModel::startExperimentSession,
+                                onStopExperimentSession = viewModel::stopExperimentSession,
                                 victimInput = viewModel.victimInput,
                                 onVictimInputChange = viewModel::onVictimInputChange,
                                 isMoving = viewModel.isMoving,
