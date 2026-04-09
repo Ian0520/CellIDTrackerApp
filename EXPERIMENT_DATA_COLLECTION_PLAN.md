@@ -250,6 +250,9 @@ The current manual-ground-truth fields are not part of the desired end state.
 - Patched native probe timing reset points:
   - reset `t_trying` / `t_pr` before every fresh INVITE (normal loop + immediate retry paths)
   - this ensures native can emit a new `[intercarrier] delta_ms=...` per probe cycle instead of only once per long-running process
+  - corrected delta definition to match experiment semantics:
+    - `delta_ms = first provisional response time (180/183) - INVITE send time`
+    - applies to normal probe cycles and immediate retry cycles after `500/408/486`
   - **requires rebuilding and rebundling the `spoof` binary into app assets to take effect on device**
 
 ### Important Note About Migration

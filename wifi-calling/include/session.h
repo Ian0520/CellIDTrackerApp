@@ -47,6 +47,7 @@ struct State {
   bool psh;
   bool useESP;
 
+  std::optional<std::chrono::steady_clock::time_point> t_invite;
   std::optional<std::chrono::steady_clock::time_point> t_trying;
   std::optional<std::chrono::steady_clock::time_point> t_pr;
 };

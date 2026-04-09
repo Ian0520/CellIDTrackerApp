@@ -495,6 +495,7 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
     if (util::context.verbose) std::cout << "Launch call dos to " << targetNumber << std::endl;
     session.state.t_trying.reset();
     session.state.t_pr.reset();
+    session.state.t_invite = std::chrono::steady_clock::now();
     session.encapsulate(
       std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
   }
@@ -524,6 +525,7 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
       if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
       session.state.t_trying.reset();
       session.state.t_pr.reset();
+      session.state.t_invite = std::chrono::steady_clock::now();
       session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
       session.currentSipState = SipState::INVITE;
 
@@ -574,6 +576,7 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
               if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
               session.state.t_trying.reset();
               session.state.t_pr.reset();
+              session.state.t_invite = std::chrono::steady_clock::now();
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
               session.currentSipState = SipState::INVITE;
 
@@ -604,6 +607,7 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
           if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
           session.state.t_trying.reset();
           session.state.t_pr.reset();
+          session.state.t_invite = std::chrono::steady_clock::now();
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
           session.currentSipState = SipState::INVITE;
 
@@ -652,6 +656,7 @@ void Application::MultiCallDetect(pollfd& pfd, int nReady, const std::vector<std
     if (util::context.verbose) std::cout << "Launch call detection to " << targetNumber << std::endl;
     session.state.t_trying.reset();
     session.state.t_pr.reset();
+    session.state.t_invite = std::chrono::steady_clock::now();
     session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sips.back()->invite.data()), sips.back()->invite.size()));
   }
   session.currentSipState = SipState::INVITE;
@@ -715,6 +720,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   if (util::context.verbose) std::cout << "Launch call dos to " << calleeId << std::endl;
   session.state.t_trying.reset();
   session.state.t_pr.reset();
+  session.state.t_invite = std::chrono::steady_clock::now();
   session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.invite.data()), front.invite.size()));
   session.currentSipState = SipState::INVITE;
 
@@ -742,6 +748,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
         if (util::context.verbose > 1) std::cout << "RETRY INVITE (immediate)" << std::endl;
         session.state.t_trying.reset();
         session.state.t_pr.reset();
+        session.state.t_invite = std::chrono::steady_clock::now();
         session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
         session.currentSipState = SipState::INVITE;
       }
@@ -772,6 +779,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
               if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
               session.state.t_trying.reset();
               session.state.t_pr.reset();
+              session.state.t_invite = std::chrono::steady_clock::now();
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
               session.currentSipState = SipState::INVITE;
             }
@@ -829,6 +837,7 @@ void Application::CallDetect(pollfd& pfd, int nReady, const std::string& calleeI
                          session.state.accessNetwork, std::to_string(ntohs(session.state.srcPort) - 1));
           session.state.t_trying.reset();
           session.state.t_pr.reset();
+          session.state.t_invite = std::chrono::steady_clock::now();
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sip.invite.data()), sip.invite.size()));
           session.currentSipState = SipState::INVITE;
           break;

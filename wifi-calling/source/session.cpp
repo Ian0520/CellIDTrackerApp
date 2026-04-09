@@ -408,9 +408,9 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
-      if (state.t_trying.has_value()) {
-        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
-        std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+      if (state.t_invite.has_value()) {
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
+        std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -418,7 +418,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
           log << nowMs << ",183," << delta << "\n";
         }
       } else {
-        std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
+        std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
     // cancel immediately for stealth probing
@@ -428,9 +428,9 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // Ringing
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
-      if (state.t_trying.has_value()) {
-        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
-        std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+      if (state.t_invite.has_value()) {
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
+        std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -438,7 +438,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
           log << nowMs << ",180," << delta << "\n";
         }
       } else {
-        std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
+        std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
     currentSipState = SipState::CANCEL;
