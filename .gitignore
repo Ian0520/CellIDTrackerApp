@@ -14,4 +14,8 @@ app/build/
 # Logs
 *.log
 
+# Generated analysis/export artifacts
+geolocation_combo_report_*.json
+probe_history.json
+
 .vscode/
