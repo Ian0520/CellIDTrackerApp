@@ -25,6 +25,7 @@ import com.example.cellidtracker.probe.ProbeParseDeduperState
 import com.example.cellidtracker.probe.ProbeAssets
 import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
+import com.example.cellidtracker.probe.markProbeCycleBoundary
 import com.example.cellidtracker.probe.shouldAcceptParsedCell
 import com.example.cellidtracker.probe.tryParseCellFromStdoutLine
 import java.io.File
@@ -32,7 +33,6 @@ import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -42,7 +42,7 @@ import kotlinx.coroutines.withContext
 private const val INTERCARRIER_MARKER = "[intercarrier]"
 private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
-private const val DELTA_WAIT_MILLIS = 1200L
+private const val DELTA_MATCH_WINDOW_MILLIS = 2000L
 
 sealed interface MainUiEvent {
     data class ShowSnackbar(val message: String) : MainUiEvent
@@ -64,7 +64,9 @@ private class ProbeStreamState {
     val deduper = ProbeParseDeduperState()
     var pendingAssets: ProbeAssets? = null
     var pendingParsed: ParsedCellFromLog? = null
-    var pendingDispatchJob: Job? = null
+    var pendingParsedAtMillis: Long = 0
+    var cachedDeltaMs: Long? = null
+    var cachedDeltaAtMillis: Long = 0
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -398,14 +400,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         appendLogText("\n$line")
         if (line.contains(INTERCARRIER_MARKER)) {
+            markProbeCycleBoundary(streamState.deduper)
             val parsedDeltaMs = parseDeltaMs(line)
             intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
-            flushPendingProbe(streamState, parsedDeltaMs)
+            if (parsedDeltaMs != null) {
+                onDeltaObserved(streamState, parsedDeltaMs)
+            }
         }
 
         val parsed = tryParseCellFromStdoutLine(line, streamState.accumulator) ?: return
-        val nowMillis = System.currentTimeMillis()
-        if (!shouldAcceptParsedCell(parsed, nowMillis, streamState.deduper)) {
+        if (!shouldAcceptParsedCell(parsed, streamState.deduper)) {
             return
         }
         probeParsedCell = true
@@ -414,39 +418,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         queuePendingProbe(streamState, assets, parsed)
     }
 
+    private fun onDeltaObserved(
+        streamState: ProbeStreamState,
+        deltaMs: Long
+    ) {
+        val nowMillis = System.currentTimeMillis()
+        val pendingAssets = streamState.pendingAssets
+        val pendingParsed = streamState.pendingParsed
+        if (pendingAssets != null && pendingParsed != null) {
+            val pendingAge = nowMillis - streamState.pendingParsedAtMillis
+            val pendingIsFresh = pendingAge >= 0 && pendingAge <= DELTA_MATCH_WINDOW_MILLIS
+            if (pendingIsFresh) {
+                flushPendingProbe(streamState, pendingAssets, pendingParsed, deltaMs)
+                return
+            }
+
+            // Drop stale pending parse so it cannot steal a future delta.
+            streamState.pendingAssets = null
+            streamState.pendingParsed = null
+            streamState.pendingParsedAtMillis = 0
+        }
+
+        streamState.cachedDeltaMs = deltaMs
+        streamState.cachedDeltaAtMillis = nowMillis
+    }
+
     private fun queuePendingProbe(
         streamState: ProbeStreamState,
         assets: ProbeAssets,
         parsed: ParsedCellFromLog
     ) {
-        // If previous parsed data is still pending and no delta arrived for it,
-        // flush it with null to avoid dropping samples.
-        flushPendingProbe(streamState, deltaMs = null)
+        val nowMillis = System.currentTimeMillis()
+        val cachedDelta = streamState.cachedDeltaMs
+        val cachedDeltaFresh = cachedDelta != null &&
+            nowMillis - streamState.cachedDeltaAtMillis <= DELTA_MATCH_WINDOW_MILLIS
+        if (cachedDeltaFresh) {
+            streamState.cachedDeltaMs = null
+            streamState.cachedDeltaAtMillis = 0
+            flushPendingProbe(streamState, assets, parsed, cachedDelta)
+            return
+        }
 
+        if (cachedDelta != null) {
+            streamState.cachedDeltaMs = null
+            streamState.cachedDeltaAtMillis = 0
+        }
         streamState.pendingAssets = assets
         streamState.pendingParsed = parsed
-        streamState.pendingDispatchJob?.cancel()
-        streamState.pendingDispatchJob = viewModelScope.launch {
-            // Native logs may emit delta after cell fields; wait briefly to pair them.
-            delay(DELTA_WAIT_MILLIS)
-            flushPendingProbe(streamState, deltaMs = null)
-        }
+        streamState.pendingParsedAtMillis = nowMillis
     }
 
     private fun flushPendingProbe(
         streamState: ProbeStreamState,
-        deltaMs: Long?
+        assets: ProbeAssets,
+        parsed: ParsedCellFromLog,
+        deltaMs: Long
     ) {
-        val pendingAssets = streamState.pendingAssets ?: return
-        val pendingParsed = streamState.pendingParsed ?: return
-
-        streamState.pendingDispatchJob?.cancel()
-        streamState.pendingDispatchJob = null
         streamState.pendingAssets = null
         streamState.pendingParsed = null
+        streamState.pendingParsedAtMillis = 0
 
         viewModelScope.launch {
-            lookupLocationForParsedCell(pendingAssets, pendingParsed, deltaMs)
+            lookupLocationForParsedCell(assets, parsed, deltaMs)
         }
     }
 

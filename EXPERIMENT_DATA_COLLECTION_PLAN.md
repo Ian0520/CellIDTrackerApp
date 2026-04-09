@@ -237,12 +237,16 @@ The current manual-ground-truth fields are not part of the desired end state.
 - Added startup compatibility migration for previously inconsistent paused schemas:
   - DB migration to v7 recreates experiment tables if v6 legacy shape is detected.
 - Added parser-side duplicate suppression for native log bursts:
-  - app now suppresses repeated identical `mcc/mnc/lac/cid` parses within a short window (10 seconds default)
+  - app now suppresses repeated parsed outputs by **probe-cycle boundary** (`[intercarrier]` marker), not by a long fixed time window
+  - this avoids the previous over-suppression bug where repeated probes in the same cell were incorrectly dropped after the first sample
   - this directly addresses duplicate history/session entries caused by native retransmissions and immediate retry behavior (e.g., after `500/408/486`)
 - Fixed `deltaMs` binding per saved probe sample:
-  - app now buffers each parsed probe briefly (1.2s) and pairs it with the next `[intercarrier] delta_ms=...` line when available
-  - if no delta marker arrives in the wait window, sample is still stored with `deltaMs = null`
-  - this avoids stale/previous-cycle `deltaMs` values when native logs emit cell fields before intercarrier delta lines
+  - app now uses delta-anchored pairing and supports both native line orders:
+    - cell fields first then `[intercarrier] delta_ms=...`
+    - `[intercarrier] delta_ms=...` first then cell fields
+  - app only commits a probe sample when a fresh delta marker is matched (instead of reusing stale/old delta)
+  - stale pending parsed data is dropped if it exceeds the delta-match freshness window, preventing cross-cycle mis-attachment
+  - this avoids the "first sample only has delta, later samples null/stale or shifted" failure mode
 - Patched native probe timing reset points:
   - reset `t_trying` / `t_pr` before every fresh INVITE (normal loop + immediate retry paths)
   - this ensures native can emit a new `[intercarrier] delta_ms=...` per probe cycle instead of only once per long-running process
@@ -258,12 +262,12 @@ The current manual-ground-truth fields are not part of the desired end state.
 1. Add session management UX polish:
    - show active session elapsed time and sample count
    - add "re-export last completed session" action
-2. Tune and document parser dedupe threshold:
-   - current default: 10 seconds
-   - validate against field logs from each carrier to ensure true distinct probes are not over-suppressed
+2. Validate and document parser cycle-boundary assumptions:
+   - current model accepts at most one parsed sample per `[intercarrier]` cycle
+   - validate with field logs per carrier that this matches native output structure (and adjust if a carrier emits multiple true samples per cycle)
 3. Tune and document delta pairing wait window:
-   - current default: 1.2 seconds
-   - validate against field logs to ensure marker arrives within window in normal conditions
+   - current delta/cell match freshness window: 2 seconds
+   - validate against field logs to ensure both line orders are matched reliably in normal conditions
 4. Add probe-session validation tests:
    - migration test for v5 -> v6 -> v7
    - migration test for inconsistent legacy v6 -> v7
@@ -282,7 +286,7 @@ One probe session means one continuous collection run:
 - all produced probe samples are attached to the same `sessionId`
 - tap **Stop & export** to finalize and write one `probe_session_<sessionId>.json`
 
-Within one continuous run, repeated identical native outputs from retransmissions/retries are de-duplicated by the app before history/session insertion.
+Within one continuous run, repeated native parsing bursts inside the same probe cycle are de-duplicated by the app before history/session insertion.
 
 ## Acceptance Criteria
 

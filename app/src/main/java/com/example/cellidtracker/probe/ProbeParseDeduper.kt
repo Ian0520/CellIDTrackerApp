@@ -1,31 +1,26 @@
 package com.example.cellidtracker.probe
 
-private const val DEFAULT_DUPLICATE_WINDOW_MILLIS = 10_000L
-
 data class ProbeParseDeduperState(
+    var cycleId: Long = 0,
+    var lastAcceptedCycleId: Long = -1,
     var lastSignature: String? = null,
-    var lastAcceptedAtMillis: Long = 0
 )
+
+fun markProbeCycleBoundary(state: ProbeParseDeduperState) {
+    state.cycleId += 1
+}
 
 fun shouldAcceptParsedCell(
     parsed: ParsedCellFromLog,
-    nowMillis: Long,
-    state: ProbeParseDeduperState,
-    duplicateWindowMillis: Long = DEFAULT_DUPLICATE_WINDOW_MILLIS
+    state: ProbeParseDeduperState
 ): Boolean {
     val signature = "${parsed.mcc}:${parsed.mnc}:${parsed.lac}:${parsed.cid}"
-    val previousSignature = state.lastSignature
-    val elapsedMillis = nowMillis - state.lastAcceptedAtMillis
-
-    val isDuplicateInsideWindow = previousSignature == signature &&
-        elapsedMillis >= 0 &&
-        elapsedMillis < duplicateWindowMillis
-
-    if (isDuplicateInsideWindow) {
+    if (state.lastAcceptedCycleId == state.cycleId) {
+        // Keep at most one accepted parse per probe cycle.
         return false
     }
 
     state.lastSignature = signature
-    state.lastAcceptedAtMillis = nowMillis
+    state.lastAcceptedCycleId = state.cycleId
     return true
 }
