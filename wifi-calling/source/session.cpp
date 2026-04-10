@@ -63,6 +63,13 @@ namespace {
     for (int i = 0; i < size; ++i) sum += *(buffer++);
     return sum;
   }
+
+  std::string trimAsciiWhitespace(const std::string& input) {
+    const auto first = input.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = input.find_last_not_of(" \t\r\n");
+    return input.substr(first, last - first + 1);
+  }
 }  // namespace
 
 Session::Session(const std::string& iface)
@@ -326,6 +333,8 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
   static std::regex accessNetwork("P-Access-Network-Info:(.*)");
   static std::regex calleeIdRegex("To: <sip:([^;@]+)");
   static std::regex callerIdRegex("From: <sip:([^;@]+)");
+  static std::regex callIdRegex(R"(Call-ID:\s*([^\r\n]+))", std::regex_constants::icase);
+  static std::regex branchRegex(R"(Via:\s*SIP/2\.0/[A-Z]+\s+[^;]+;branch=([^;\r\n]+))", std::regex_constants::icase);
   std::smatch match;
 
   // auto it = std::find(buffer.begin(), buffer.end(), '\n');
@@ -363,6 +372,36 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     if (util::context.verbose) std::cout << "\033[32m" << status << ": " << message << "\033[0m" << std::endl;
   } else {
     return false;
+  }
+
+  if (status > 0 && !state.activeInviteCallId.empty()) {
+    std::string responseCallId;
+    if (std::regex_search(fullbody, match, callIdRegex)) {
+      responseCallId = trimAsciiWhitespace(match[1].str());
+    }
+    if (!responseCallId.empty() && responseCallId != state.activeInviteCallId) {
+      if (util::context.verbose > 1) {
+        std::cout << "[intercarrier] ignore stale SIP response status=" << status
+                  << " callId=" << responseCallId
+                  << " expected=" << state.activeInviteCallId << std::endl;
+      }
+      return true;
+    }
+  }
+
+  if (status > 0 && !state.activeInviteBranch.empty()) {
+    std::string responseBranch;
+    if (std::regex_search(fullbody, match, branchRegex)) {
+      responseBranch = trimAsciiWhitespace(match[1].str());
+    }
+    if (!responseBranch.empty() && responseBranch != state.activeInviteBranch) {
+      if (util::context.verbose > 1) {
+        std::cout << "[intercarrier] ignore stale SIP response status=" << status
+                  << " branch=" << responseBranch
+                  << " expected=" << state.activeInviteBranch << std::endl;
+      }
+      return true;
+    }
   }
 
   auto now = std::chrono::steady_clock::now();
@@ -456,6 +495,10 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       currentSipState = SipState::ACK;
     }
   }
+  else if (status == 200 && state.retryInvitePending) {
+    // CANCEL completed for timeout/busy retry path; proceed to fresh INVITE stage.
+    currentSipState = SipState::BUSY;
+  }
   else if (status == 486 || status == 500 || status == 408) {
     // Busy
     currentSipState = SipState::BUSY;
@@ -463,13 +506,14 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
   }
   else if (status == 487 ) {
     // Request Terminated
-    // if (currentSipApp != SipApp::DOS) 
-
-    if (currentSipApp == SipApp::DOS)  currentSipState = SipState::SPROG;
-    else {
+    if (state.retryInvitePending) {
+      currentSipState = SipState::BUSY;
+    }
+    else if (currentSipApp == SipApp::DOS)  {
+      currentSipState = SipState::SPROG;
+    } else {
       currentSipState = SipState::ACK;
     }
-    
   }
   
 

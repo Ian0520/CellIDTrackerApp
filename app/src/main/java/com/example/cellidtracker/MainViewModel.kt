@@ -1,6 +1,7 @@
 package com.example.cellidtracker
 
 import android.app.Application
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -43,6 +44,7 @@ private const val INTERCARRIER_MARKER = "[intercarrier]"
 private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
 private const val DELTA_MATCH_WINDOW_MILLIS = 2000L
+private const val LOGCAT_TAG = "CellIDTracker"
 
 sealed interface MainUiEvent {
     data class ShowSnackbar(val message: String) : MainUiEvent
@@ -400,10 +402,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         appendLogText("\n$line")
         if (line.contains(INTERCARRIER_MARKER)) {
-            markProbeCycleBoundary(streamState.deduper)
             val parsedDeltaMs = parseDeltaMs(line)
-            intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
             if (parsedDeltaMs != null) {
+                markProbeCycleBoundary(streamState.deduper)
+                intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
                 onDeltaObserved(streamState, parsedDeltaMs)
             }
         }
@@ -486,11 +488,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleIntercarrierStdoutLine(line: String) {
         appendLogText("\n$line")
         if (!line.contains(INTERCARRIER_MARKER) || userStopRequested) return
+        val deltaMs = parseDeltaMs(line) ?: return
 
         userStopRequested = true
         RootShell.requestStop()
-
-        val deltaMs = parseDeltaMs(line)
         intercarrierStatus = buildIntercarrierTestStatus(deltaMs)
     }
 
@@ -627,9 +628,13 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     private fun buildRunHeader(title: String, command: String): String = buildString {
         appendLine(title)
         appendLine("Command:")
-        appendLine(command)
+        appendLine(redactSensitiveCommand(command))
         appendLine()
         appendLine("----- STDOUT (stream) -----")
+    }
+
+    private fun redactSensitiveCommand(command: String): String {
+        return command.replace(Regex("GOOGLE_API_KEY='[^']*'"), "GOOGLE_API_KEY='***'")
     }
 
     private fun appendProcessDone(exitCode: Int) {
@@ -760,6 +765,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                 logLines.removeFirst()
             }
             logLines.addLast(line)
+            if (line.isNotBlank()) {
+                Log.i(LOGCAT_TAG, line)
+            }
         }
         logDirty.set(true)
     }

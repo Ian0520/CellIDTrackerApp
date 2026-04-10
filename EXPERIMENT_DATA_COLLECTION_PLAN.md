@@ -253,6 +253,33 @@ The current manual-ground-truth fields are not part of the desired end state.
   - corrected delta definition to match experiment semantics:
     - `delta_ms = first provisional response time (180/183) - INVITE send time`
     - applies to normal probe cycles and immediate retry cycles after `500/408/486`
+  - added INVITE transaction binding by Call-ID:
+    - each sent INVITE stores `activeInviteCallId`
+    - stale delayed SIP responses from previous call dialogs are ignored for state/delta updates
+    - prevents abnormally low delta after immediate retry when old provisional responses arrive late
+  - hardened SIP Call-ID regeneration:
+    - `setCallId()` now targets the `Call-ID:` header explicitly (instead of a generic 22-char token match)
+    - reduces risk of retry INVITE accidentally reusing old Call-ID and contaminating delta after timeout restarts
+  - hardened continuous-probe loop transaction isolation:
+    - every fresh INVITE send now regenerates branch/call-id/from-tag before timing is armed
+    - active transaction matching now checks both `Call-ID` and `Via branch` before applying SIP state/delta updates
+    - this specifically targets the observed issue where normal continuous probing showed lower deltas than one-shot inter-carrier test after the first probe
+  - adjusted continuous loop send order to reduce overlap bias:
+    - in `SPROG` rollover paths, send `CANCEL` first and then send the next fresh `INVITE`
+    - avoids arming next-cycle delta timing while previous leg is still active, improving comparability with one-shot inter-carrier measurements
+  - corrected transport selection for fresh probe INVITEs:
+    - fresh INVITE sends now force `INVITE` state before encapsulation, so they do not inherit `SPROG` and accidentally switch to UDP
+    - this is the most likely cause of the 1200 ms one-shot vs 500 ms continuous mismatch
+  - note on continuous probe closure experiment:
+    - an attempted `487 -> ACK -> immediate new INVITE` closure path was tested and then rolled back
+    - rollback reason: it caused over-frequent probe cycles and duplicate history entries in app-side parsing
+  - aligned single-target `CallDoS` timeout-retry flow with `MultiCallDoS`:
+    - `500/486/408` retry now enters explicit `BUSY` handling (`CANCEL -> fresh INVITE -> session swap`) instead of direct INVITE bypass
+    - this keeps retry-cycle cleanup consistent and reduces contaminated low-delta retries after timeout restarts
+  - hardened `CallDoS` timeout retry into a strict two-phase boundary:
+    - on `500/486/408`, retry now sends `CANCEL` first and waits for termination (`487`/`200`) before arming the new INVITE
+    - includes timeout fallback when cancel response is missing, to avoid retry deadlock
+    - this targets overlap between old/new transactions that can skew restart-cycle `delta_ms` low
   - **requires rebuilding and rebundling the `spoof` binary into app assets to take effect on device**
 
 ### Important Note About Migration

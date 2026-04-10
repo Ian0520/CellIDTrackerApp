@@ -62,6 +62,11 @@ public:
   void MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::string>& victimList);
 
 private:
+  static std::string extractCallIdFromSip(const std::string& sip);
+  static std::string extractBranchFromSip(const std::string& sip);
+  void prepareFreshInvite(SipMessage& sip);
+  void armInviteTiming(const std::string& invite);
+
   Session& session;
 
   std::size_t lastLineIndex;
