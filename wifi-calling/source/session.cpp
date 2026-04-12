@@ -504,8 +504,10 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     currentSipState = SipState::BUSY;
     state.retryImmediate = true;
   }
-  else if (status == 487 ) {
-    // Request Terminated
+  else if (status == 487 || status == 481) {
+    // 487: Request Terminated
+    // 481: Call/Transaction Does Not Exist (often seen when CANCEL races
+    // with remote teardown). Treat both as termination signals.
     if (state.retryInvitePending) {
       currentSipState = SipState::BUSY;
     }
