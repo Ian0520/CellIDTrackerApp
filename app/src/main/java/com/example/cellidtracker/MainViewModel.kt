@@ -14,8 +14,6 @@ import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
 import com.example.cellidtracker.experiment.exportExperimentSessionToFile
-import com.example.cellidtracker.geolocation.buildCandidatePayloads
-import com.example.cellidtracker.geolocation.selectBestLocation
 import com.example.cellidtracker.history.ProbeHistory
 import com.example.cellidtracker.history.encodeTowers
 import com.example.cellidtracker.history.exportHistoryToFile
@@ -508,20 +506,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         parsed: ParsedCellFromLog,
         deltaMs: Long?
     ) {
-        val towersForQuery = recentTowers.toList().ifEmpty { listOf(parsed.toTowerParams()) }
-        val (candidatePayloads, siteCount) = buildCandidatePayloads(towersForQuery)
+        val payloadUsed = listOf(parsed.toTowerParams())
 
         appendLogText(
             """
 
 [Geo] querying Google Geolocation...
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
-[Geo] raw towers=${recentTowers.size}, grouped sites=$siteCount, candidate payloads=${candidatePayloads.size}
+[Geo] payload towers=1 (latest parsed cell only)
 """.trimIndent()
         )
 
-        val (result, payloadUsed) = withContext(Dispatchers.IO) {
-            selectBestLocation(towersForQuery)
+        val result = withContext(Dispatchers.IO) {
+            GoogleGeolocationClient.queryByCells(payloadUsed)
         }
 
         appendLogText(
