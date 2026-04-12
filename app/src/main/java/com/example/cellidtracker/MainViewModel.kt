@@ -31,7 +31,9 @@ import com.example.cellidtracker.probe.shouldAcceptParsedCell
 import com.example.cellidtracker.probe.tryParseCellFromStdoutLine
 import java.io.File
 import java.io.IOException
-import java.util.UUID
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -45,6 +47,7 @@ private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
 private const val DELTA_MATCH_WINDOW_MILLIS = 2000L
 private const val LOGCAT_TAG = "CellIDTracker"
+private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
     data class ShowSnackbar(val message: String) : MainUiEvent
@@ -121,6 +124,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeExperimentSessionDbId: Long? = null
 
     init {
+        stopProbeForegroundServiceIfIdle()
         startLogBufferFlushLoop()
         viewModelScope.launch {
             loadHistory()
@@ -186,7 +190,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val now = System.currentTimeMillis()
                 val session = ExperimentSessionEntity(
-                    sessionId = UUID.randomUUID().toString(),
+                    sessionId = generateTimestampSessionId(now),
                     startedAtMillis = now,
                     endedAtMillis = null,
                     createdAtMillis = now,
@@ -254,6 +258,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
+                startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
                 val streamState = ProbeStreamState()
                 val exitCode = runProbeStreaming(prepared.command) { line ->
@@ -266,6 +271,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showSnackbar("Probe failed: ${e.message ?: e}")
             } finally {
                 isRootRunning = false
+                stopProbeForegroundServiceIfIdle()
             }
         }
     }
@@ -285,6 +291,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
+                startProbeForegroundService(mode = "inter-carrier")
                 val prepared = prepareProbeRun("Running inter-carrier test (root)...")
                 val exitCode = runProbeStreaming(prepared.command) { line ->
                     handleIntercarrierStdoutLine(line)
@@ -296,6 +303,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showSnackbar("Inter-carrier test failed: ${e.message ?: e}")
             } finally {
                 isIntercarrierRunning = false
+                stopProbeForegroundServiceIfIdle()
             }
         }
     }
@@ -729,6 +737,27 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             historyByVictim[victim] = mutableStateListOf<ProbeHistory>().apply { addAll(list) }
         }
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+    }
+
+    private fun generateTimestampSessionId(nowMillis: Long): String {
+        return Instant.ofEpochMilli(nowMillis)
+            .atZone(ZoneId.systemDefault())
+            .format(SESSION_ID_FORMATTER)
+    }
+
+    private fun startProbeForegroundService(mode: String) {
+        runCatching { ProbeForegroundService.start(appContext, mode) }
+            .onFailure { e ->
+                Log.w(LOGCAT_TAG, "Failed to start probe foreground service: ${e.message}", e)
+            }
+    }
+
+    private fun stopProbeForegroundServiceIfIdle() {
+        if (isRootRunning || isIntercarrierRunning) return
+        runCatching { ProbeForegroundService.stop(appContext) }
+            .onFailure { e ->
+                Log.w(LOGCAT_TAG, "Failed to stop probe foreground service: ${e.message}", e)
+            }
     }
 
     private suspend fun loadActiveExperimentSession() {

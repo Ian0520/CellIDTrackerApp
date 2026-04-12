@@ -146,10 +146,37 @@ Each truth sample must include:
 - `lon`
 - `accuracyM`
 - `provider`
-- optional altitude / speed / bearing if easy to collect
+- `speedMps` (record raw speed even if movement class is also stored)
+- optional `speedAccuracyMps` if available from platform
+- optional altitude / bearing if easy to collect
+- `movementClass`
+- optional `movementSource` (`auto` / `manual`) if operator override is supported
 
 Recommended file name:
 - `truth_session_<sessionId>.json`
+
+### Ground-Truth Movement Class Recommendation
+
+Yes, movement should be recorded and it is better to keep both:
+- raw `speedMps`
+- derived `movementClass`
+
+Recommended v1 classes:
+- `stationary`
+- `slow_move` (e.g., walking)
+- `medium_move` (e.g., running / bike in slow traffic)
+- `fast_move` (vehicle)
+- `unknown`
+
+Recommended speed thresholds (m/s), tunable later:
+- `stationary`: `< 0.5`
+- `slow_move`: `0.5 - 1.8`
+- `medium_move`: `1.8 - 4.5`
+- `fast_move`: `>= 4.5`
+
+If speed is unavailable for a sample:
+- set `speedMps = null`
+- set `movementClass = unknown`
 
 ## Matching Rules For Offline Analysis
 

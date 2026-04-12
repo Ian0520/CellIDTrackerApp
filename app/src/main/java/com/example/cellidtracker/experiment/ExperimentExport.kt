@@ -141,7 +141,7 @@ suspend fun exportExperimentSessionToFile(
     val baseDir = ctx.getExternalFilesDir(null)
         ?: throw IOException("External files directory unavailable")
     val exportDir = File(baseDir, "experiment_sessions").apply { mkdirs() }
-    val outFile = File(exportDir, "probe_session_${session.sessionId}.json")
+    val outFile = File(exportDir, "${session.sessionId}.json")
     outFile.writeText(payloadToJson(payload).toString(2))
     dao.updateSessionExportTimestamp(sessionDbId, exportedAtMillis)
     outFile
