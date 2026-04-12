@@ -29,6 +29,9 @@ fun tryParseCellFromStdoutLine(
     val cid = acc["cellid"]
 
     return if (mcc != null && mnc != null && lac != null && cid != null) {
+        // Reset after emitting one complete sample so stale fields
+        // do not repeatedly re-trigger identical parses.
+        acc.clear()
         ParsedCellFromLog(mcc, mnc, lac, cid)
     } else {
         null

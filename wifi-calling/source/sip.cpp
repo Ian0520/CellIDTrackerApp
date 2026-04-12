@@ -9,7 +9,7 @@ namespace {
   const std::string chars_hex = "abcdef0123456789";
   static std::regex fromtag(R"(tag=([0-9A-Fa-f]{8})(?![0-9A-Fa-f]))");
   static std::regex branch("524287-1---[0-9a-f]{16}");
-  static std::regex callid("[0-9a-zA-Z]{22}");
+  static std::regex callid(R"(Call-ID:\s*([0-9A-Za-z]{22}))", std::regex_constants::icase);
 
   void replaceAll(std::string& str, const std::string& from, const std::string& to) {
     if (from.empty()) return;
@@ -156,7 +156,7 @@ void SipMessage::setCallId() {
   for (int i = 0; i < 22; ++i) newCallID += chars[rand() % chars.size()];
   std::smatch match;
   if (std::regex_search(invite, match, callid)) {
-    std::string oldCallID = match[0].str();
+    std::string oldCallID = match[1].str();
     replaceIdOrTag(oldCallID, newCallID);
   }
 }

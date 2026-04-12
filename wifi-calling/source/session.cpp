@@ -63,6 +63,13 @@ namespace {
     for (int i = 0; i < size; ++i) sum += *(buffer++);
     return sum;
   }
+
+  std::string trimAsciiWhitespace(const std::string& input) {
+    const auto first = input.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = input.find_last_not_of(" \t\r\n");
+    return input.substr(first, last - first + 1);
+  }
 }  // namespace
 
 Session::Session(const std::string& iface)
@@ -326,6 +333,8 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
   static std::regex accessNetwork("P-Access-Network-Info:(.*)");
   static std::regex calleeIdRegex("To: <sip:([^;@]+)");
   static std::regex callerIdRegex("From: <sip:([^;@]+)");
+  static std::regex callIdRegex(R"(Call-ID:\s*([^\r\n]+))", std::regex_constants::icase);
+  static std::regex branchRegex(R"(Via:\s*SIP/2\.0/[A-Z]+\s+[^;]+;branch=([^;\r\n]+))", std::regex_constants::icase);
   std::smatch match;
 
   // auto it = std::find(buffer.begin(), buffer.end(), '\n');
@@ -363,6 +372,36 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     if (util::context.verbose) std::cout << "\033[32m" << status << ": " << message << "\033[0m" << std::endl;
   } else {
     return false;
+  }
+
+  if (status > 0 && !state.activeInviteCallId.empty()) {
+    std::string responseCallId;
+    if (std::regex_search(fullbody, match, callIdRegex)) {
+      responseCallId = trimAsciiWhitespace(match[1].str());
+    }
+    if (!responseCallId.empty() && responseCallId != state.activeInviteCallId) {
+      if (util::context.verbose > 1) {
+        std::cout << "[intercarrier] ignore stale SIP response status=" << status
+                  << " callId=" << responseCallId
+                  << " expected=" << state.activeInviteCallId << std::endl;
+      }
+      return true;
+    }
+  }
+
+  if (status > 0 && !state.activeInviteBranch.empty()) {
+    std::string responseBranch;
+    if (std::regex_search(fullbody, match, branchRegex)) {
+      responseBranch = trimAsciiWhitespace(match[1].str());
+    }
+    if (!responseBranch.empty() && responseBranch != state.activeInviteBranch) {
+      if (util::context.verbose > 1) {
+        std::cout << "[intercarrier] ignore stale SIP response status=" << status
+                  << " branch=" << responseBranch
+                  << " expected=" << state.activeInviteBranch << std::endl;
+      }
+      return true;
+    }
   }
 
   auto now = std::chrono::steady_clock::now();
@@ -408,9 +447,9 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
-      if (state.t_trying.has_value()) {
-        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
-        std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+      if (state.t_invite.has_value()) {
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
+        std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -418,7 +457,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
           log << nowMs << ",183," << delta << "\n";
         }
       } else {
-        std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
+        std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
     // cancel immediately for stealth probing
@@ -428,9 +467,9 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // Ringing
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
-      if (state.t_trying.has_value()) {
-        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_trying).count();
-        std::cout << "[intercarrier] delta_ms=" << delta << " trying=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_trying->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+      if (state.t_invite.has_value()) {
+        auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
+        std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -438,7 +477,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
           log << nowMs << ",180," << delta << "\n";
         }
       } else {
-        std::cout << "[intercarrier] delta_ms=unknown (no 100 Trying seen)" << std::endl;
+        std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
     currentSipState = SipState::CANCEL;
@@ -456,20 +495,27 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       currentSipState = SipState::ACK;
     }
   }
+  else if (status == 200 && state.retryInvitePending) {
+    // CANCEL completed for timeout/busy retry path; proceed to fresh INVITE stage.
+    currentSipState = SipState::BUSY;
+  }
   else if (status == 486 || status == 500 || status == 408) {
     // Busy
     currentSipState = SipState::BUSY;
     state.retryImmediate = true;
   }
-  else if (status == 487 ) {
-    // Request Terminated
-    // if (currentSipApp != SipApp::DOS) 
-
-    if (currentSipApp == SipApp::DOS)  currentSipState = SipState::SPROG;
-    else {
+  else if (status == 487 || status == 481) {
+    // 487: Request Terminated
+    // 481: Call/Transaction Does Not Exist (often seen when CANCEL races
+    // with remote teardown). Treat both as termination signals.
+    if (state.retryInvitePending) {
+      currentSipState = SipState::BUSY;
+    }
+    else if (currentSipApp == SipApp::DOS)  {
+      currentSipState = SipState::SPROG;
+    } else {
       currentSipState = SipState::ACK;
     }
-    
   }
   
 

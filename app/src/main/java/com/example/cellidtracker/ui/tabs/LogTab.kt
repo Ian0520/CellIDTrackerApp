@@ -53,7 +53,7 @@ fun LogTabContent(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 120.dp, max = 220.dp)
+                            .heightIn(min = 280.dp, max = 560.dp)
                             .background(
                                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                                 shape = MaterialTheme.shapes.small

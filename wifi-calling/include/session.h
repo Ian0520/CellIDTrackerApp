@@ -29,6 +29,8 @@ struct State {
   std::string secver;
   std::string accessNetwork;
   std::string calleeId;
+  std::string activeInviteCallId;
+  std::string activeInviteBranch;
   std::unordered_map<std::string, bool> calleeDoSAttackable;
   std::unordered_map<std::string, bool> extractedCellId;
 
@@ -42,11 +44,16 @@ struct State {
   bool needAck487{false};
   // Signal to immediately retry after 486/500/408
   bool retryImmediate{false};
+  // Two-phase retry after timeout/busy in CallDoS:
+  // 1) send CANCEL, 2) wait for termination (or timeout fallback), 3) send fresh INVITE.
+  bool retryCancelPending{false};
+  bool retryInvitePending{false};
 
   bool ack;
   bool psh;
   bool useESP;
 
+  std::optional<std::chrono::steady_clock::time_point> t_invite;
   std::optional<std::chrono::steady_clock::time_point> t_trying;
   std::optional<std::chrono::steady_clock::time_point> t_pr;
 };

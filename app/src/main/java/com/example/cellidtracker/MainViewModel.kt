@@ -1,6 +1,7 @@
 package com.example.cellidtracker
 
 import android.app.Application
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -9,7 +10,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.cellidtracker.data.ExperimentSampleEntity
+import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
+import com.example.cellidtracker.experiment.exportExperimentSessionToFile
 import com.example.cellidtracker.geolocation.buildCandidatePayloads
 import com.example.cellidtracker.geolocation.selectBestLocation
 import com.example.cellidtracker.history.ProbeHistory
@@ -18,12 +22,18 @@ import com.example.cellidtracker.history.exportHistoryToFile
 import com.example.cellidtracker.history.toDomain
 import com.example.cellidtracker.history.toEntity
 import com.example.cellidtracker.probe.ParsedCellFromLog
+import com.example.cellidtracker.probe.ProbeParseDeduperState
 import com.example.cellidtracker.probe.ProbeAssets
 import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
+import com.example.cellidtracker.probe.markProbeCycleBoundary
+import com.example.cellidtracker.probe.shouldAcceptParsedCell
 import com.example.cellidtracker.probe.tryParseCellFromStdoutLine
 import java.io.File
 import java.io.IOException
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -35,6 +45,9 @@ import kotlinx.coroutines.withContext
 private const val INTERCARRIER_MARKER = "[intercarrier]"
 private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
+private const val DELTA_MATCH_WINDOW_MILLIS = 2000L
+private const val LOGCAT_TAG = "CellIDTracker"
+private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
     data class ShowSnackbar(val message: String) : MainUiEvent
@@ -53,7 +66,12 @@ private data class VictimUpdateResult(
 
 private class ProbeStreamState {
     val accumulator = mutableMapOf<String, Int>()
-    var lastDeltaMs: Long? = null
+    val deduper = ProbeParseDeduperState()
+    var pendingAssets: ProbeAssets? = null
+    var pendingParsed: ParsedCellFromLog? = null
+    var pendingParsedAtMillis: Long = 0
+    var cachedDeltaMs: Long? = null
+    var cachedDeltaAtMillis: Long = 0
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -96,14 +114,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var cidInput by mutableStateOf("")
         private set
+    var activeExperimentSessionId by mutableStateOf<String?>(null)
+        private set
+    var activeExperimentStartedAtMillis by mutableStateOf<Long?>(null)
+        private set
 
     private var userStopRequested by mutableStateOf(false)
     private var probeParsedCell by mutableStateOf(false)
-    private var lastQueriedCid by mutableStateOf<Int?>(null)
+    private var activeExperimentSessionDbId: Long? = null
 
     init {
+        stopProbeForegroundServiceIfIdle()
         startLogBufferFlushLoop()
-        viewModelScope.launch { loadHistory() }
+        viewModelScope.launch {
+            loadHistory()
+            loadActiveExperimentSession()
+        }
     }
 
     fun onVictimInputChange(value: String) {
@@ -154,6 +180,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun startExperimentSession() {
+        if (activeExperimentSessionDbId != null) {
+            showSnackbar("An experiment session is already active.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val now = System.currentTimeMillis()
+                val session = ExperimentSessionEntity(
+                    sessionId = generateTimestampSessionId(now),
+                    startedAtMillis = now,
+                    endedAtMillis = null,
+                    createdAtMillis = now,
+                    exportedAtMillis = null
+                )
+                val insertedId = withContext(Dispatchers.IO) {
+                    db.experimentDao().insertSession(session)
+                }
+                activeExperimentSessionDbId = insertedId
+                activeExperimentSessionId = session.sessionId
+                activeExperimentStartedAtMillis = session.startedAtMillis
+                showSnackbar("Experiment session started: ${session.sessionId}")
+            } catch (e: Exception) {
+                showSnackbar("Start session failed: ${e.message ?: e}")
+            }
+        }
+    }
+
+    fun stopExperimentSession() {
+        val sessionDbId = activeExperimentSessionDbId
+        if (sessionDbId == null) {
+            showSnackbar("No active experiment session.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    db.experimentDao().endSession(sessionDbId, System.currentTimeMillis())
+                }
+                val outFile = exportExperimentSessionToFile(appContext, db, sessionDbId)
+                clearActiveExperimentSessionState()
+                showSnackbar("Session exported: ${outFile.absolutePath}")
+            } catch (e: Exception) {
+                loadActiveExperimentSession()
+                showSnackbar("Stop/export failed: ${e.message ?: e}")
+            }
+        }
+    }
+
     fun setVictimNumber() {
         val victimNum = victimInput.trim()
         if (victimNum.isEmpty()) {
@@ -181,6 +258,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
+                startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
                 val streamState = ProbeStreamState()
                 val exitCode = runProbeStreaming(prepared.command) { line ->
@@ -193,6 +271,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showSnackbar("Probe failed: ${e.message ?: e}")
             } finally {
                 isRootRunning = false
+                stopProbeForegroundServiceIfIdle()
             }
         }
     }
@@ -212,6 +291,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
+                startProbeForegroundService(mode = "inter-carrier")
                 val prepared = prepareProbeRun("Running inter-carrier test (root)...")
                 val exitCode = runProbeStreaming(prepared.command) { line ->
                     handleIntercarrierStdoutLine(line)
@@ -223,6 +303,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showSnackbar("Inter-carrier test failed: ${e.message ?: e}")
             } finally {
                 isIntercarrierRunning = false
+                stopProbeForegroundServiceIfIdle()
             }
         }
     }
@@ -300,7 +381,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun resetProbeRunState() {
         userStopRequested = false
-        lastQueriedCid = null
         probeParsedCell = false
     }
 
@@ -330,32 +410,96 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         appendLogText("\n$line")
         if (line.contains(INTERCARRIER_MARKER)) {
-            streamState.lastDeltaMs = parseDeltaMs(line)
-            intercarrierStatus = buildProbeIntercarrierStatus(streamState.lastDeltaMs)
+            val parsedDeltaMs = parseDeltaMs(line)
+            if (parsedDeltaMs != null) {
+                markProbeCycleBoundary(streamState.deduper)
+                intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
+                onDeltaObserved(streamState, parsedDeltaMs)
+            }
         }
 
         val parsed = tryParseCellFromStdoutLine(line, streamState.accumulator) ?: return
-        if (parsed.cid == lastQueriedCid) return
-
-        lastQueriedCid = parsed.cid
+        if (!shouldAcceptParsedCell(parsed, streamState.deduper)) {
+            return
+        }
         probeParsedCell = true
         applyParsedCell(parsed)
         rememberRecentTower(parsed)
+        queuePendingProbe(streamState, assets, parsed)
+    }
 
-        val deltaSnapshot = streamState.lastDeltaMs
+    private fun onDeltaObserved(
+        streamState: ProbeStreamState,
+        deltaMs: Long
+    ) {
+        val nowMillis = System.currentTimeMillis()
+        val pendingAssets = streamState.pendingAssets
+        val pendingParsed = streamState.pendingParsed
+        if (pendingAssets != null && pendingParsed != null) {
+            val pendingAge = nowMillis - streamState.pendingParsedAtMillis
+            val pendingIsFresh = pendingAge >= 0 && pendingAge <= DELTA_MATCH_WINDOW_MILLIS
+            if (pendingIsFresh) {
+                flushPendingProbe(streamState, pendingAssets, pendingParsed, deltaMs)
+                return
+            }
+
+            // Drop stale pending parse so it cannot steal a future delta.
+            streamState.pendingAssets = null
+            streamState.pendingParsed = null
+            streamState.pendingParsedAtMillis = 0
+        }
+
+        streamState.cachedDeltaMs = deltaMs
+        streamState.cachedDeltaAtMillis = nowMillis
+    }
+
+    private fun queuePendingProbe(
+        streamState: ProbeStreamState,
+        assets: ProbeAssets,
+        parsed: ParsedCellFromLog
+    ) {
+        val nowMillis = System.currentTimeMillis()
+        val cachedDelta = streamState.cachedDeltaMs
+        val cachedDeltaFresh = cachedDelta != null &&
+            nowMillis - streamState.cachedDeltaAtMillis <= DELTA_MATCH_WINDOW_MILLIS
+        if (cachedDeltaFresh) {
+            streamState.cachedDeltaMs = null
+            streamState.cachedDeltaAtMillis = 0
+            flushPendingProbe(streamState, assets, parsed, cachedDelta)
+            return
+        }
+
+        if (cachedDelta != null) {
+            streamState.cachedDeltaMs = null
+            streamState.cachedDeltaAtMillis = 0
+        }
+        streamState.pendingAssets = assets
+        streamState.pendingParsed = parsed
+        streamState.pendingParsedAtMillis = nowMillis
+    }
+
+    private fun flushPendingProbe(
+        streamState: ProbeStreamState,
+        assets: ProbeAssets,
+        parsed: ParsedCellFromLog,
+        deltaMs: Long
+    ) {
+        streamState.pendingAssets = null
+        streamState.pendingParsed = null
+        streamState.pendingParsedAtMillis = 0
+
         viewModelScope.launch {
-            lookupLocationForParsedCell(assets, parsed, deltaSnapshot)
+            lookupLocationForParsedCell(assets, parsed, deltaMs)
         }
     }
 
     private fun handleIntercarrierStdoutLine(line: String) {
         appendLogText("\n$line")
         if (!line.contains(INTERCARRIER_MARKER) || userStopRequested) return
+        val deltaMs = parseDeltaMs(line) ?: return
 
         userStopRequested = true
         RootShell.requestStop()
-
-        val deltaMs = parseDeltaMs(line)
         intercarrierStatus = buildIntercarrierTestStatus(deltaMs)
     }
 
@@ -389,7 +533,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         parsed = parsed,
                         location = location,
                         payloadUsed = payloadUsed,
-                        deltaMs = deltaMs
+                        deltaMs = deltaMs,
+                        geolocationStatus = "success",
+                        geolocationError = null
                     )
                     buildGeoSuccessLog(location)
                 },
@@ -400,7 +546,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         parsed = parsed,
                         location = null,
                         payloadUsed = payloadUsed,
-                        deltaMs = deltaMs
+                        deltaMs = deltaMs,
+                        geolocationStatus = "failure",
+                        geolocationError = error.message ?: error.toString()
                     )
                     "\n[Google Geolocation] 查詢失敗：${error.message ?: error}"
                 }
@@ -413,10 +561,16 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         parsed: ParsedCellFromLog,
         location: CellLocationResult?,
         payloadUsed: List<CellTowerParams>,
-        deltaMs: Long?
+        deltaMs: Long?,
+        geolocationStatus: String,
+        geolocationError: String?
     ) {
         val victimKey = currentVictimFromList(assets.workDir)
             .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
+        val recordedAtMillis = System.currentTimeMillis()
+        val towersJson = encodeTowers(payloadUsed)
+        val movingSnapshot = isMoving
+        val activeSessionSnapshot = activeExperimentSessionDbId
         val entry = ProbeHistory(
             mcc = parsed.mcc,
             mnc = parsed.mnc,
@@ -425,11 +579,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             lat = location?.lat,
             lon = location?.lon,
             accuracy = location?.range,
-            timestampMillis = System.currentTimeMillis(),
+            timestampMillis = recordedAtMillis,
             victim = victimKey,
             towersCount = payloadUsed.size,
-            towersJson = encodeTowers(payloadUsed),
-            moving = isMoving,
+            towersJson = towersJson,
+            moving = movingSnapshot,
             deltaMs = deltaMs
         )
 
@@ -439,6 +593,29 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 
         withContext(Dispatchers.IO) {
             db.historyDao().insert(entry.toEntity())
+            if (activeSessionSnapshot != null) {
+                db.experimentDao().insertSample(
+                    ExperimentSampleEntity(
+                        sessionDbId = activeSessionSnapshot,
+                        recordedAtMillis = recordedAtMillis,
+                        victim = victimKey,
+                        mcc = parsed.mcc,
+                        mnc = parsed.mnc,
+                        lac = parsed.lac,
+                        cid = parsed.cid,
+                        estimatedLat = location?.lat,
+                        estimatedLon = location?.lon,
+                        estimatedAccuracyM = location?.range,
+                        geolocationStatus = geolocationStatus,
+                        geolocationError = geolocationError,
+                        towersCount = payloadUsed.size,
+                        towersJson = towersJson,
+                        moving = movingSnapshot,
+                        deltaMs = deltaMs,
+                        createdAtMillis = recordedAtMillis
+                    )
+                )
+            }
         }
     }
 
@@ -459,9 +636,13 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     private fun buildRunHeader(title: String, command: String): String = buildString {
         appendLine(title)
         appendLine("Command:")
-        appendLine(command)
+        appendLine(redactSensitiveCommand(command))
         appendLine()
         appendLine("----- STDOUT (stream) -----")
+    }
+
+    private fun redactSensitiveCommand(command: String): String {
+        return command.replace(Regex("GOOGLE_API_KEY='[^']*'"), "GOOGLE_API_KEY='***'")
     }
 
     private fun appendProcessDone(exitCode: Int) {
@@ -558,6 +739,51 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
     }
 
+    private fun generateTimestampSessionId(nowMillis: Long): String {
+        return Instant.ofEpochMilli(nowMillis)
+            .atZone(ZoneId.systemDefault())
+            .format(SESSION_ID_FORMATTER)
+    }
+
+    private fun startProbeForegroundService(mode: String) {
+        runCatching { ProbeForegroundService.start(appContext, mode) }
+            .onFailure { e ->
+                Log.w(LOGCAT_TAG, "Failed to start probe foreground service: ${e.message}", e)
+            }
+    }
+
+    private fun stopProbeForegroundServiceIfIdle() {
+        if (isRootRunning || isIntercarrierRunning) return
+        runCatching { ProbeForegroundService.stop(appContext) }
+            .onFailure { e ->
+                Log.w(LOGCAT_TAG, "Failed to stop probe foreground service: ${e.message}", e)
+            }
+    }
+
+    private suspend fun loadActiveExperimentSession() {
+        val active = withContext(Dispatchers.IO) {
+            db.experimentDao().getActiveSession()
+        }
+        applyActiveExperimentSession(active)
+    }
+
+    private fun applyActiveExperimentSession(session: ExperimentSessionEntity?) {
+        if (session == null) {
+            clearActiveExperimentSessionState()
+            return
+        }
+
+        activeExperimentSessionDbId = session.id
+        activeExperimentSessionId = session.sessionId
+        activeExperimentStartedAtMillis = session.startedAtMillis
+    }
+
+    private fun clearActiveExperimentSessionState() {
+        activeExperimentSessionDbId = null
+        activeExperimentSessionId = null
+        activeExperimentStartedAtMillis = null
+    }
+
     private fun showSnackbar(message: String) {
         _events.tryEmit(MainUiEvent.ShowSnackbar(message))
     }
@@ -568,6 +794,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                 logLines.removeFirst()
             }
             logLines.addLast(line)
+            if (line.isNotBlank()) {
+                Log.i(LOGCAT_TAG, line)
+            }
         }
         logDirty.set(true)
     }
