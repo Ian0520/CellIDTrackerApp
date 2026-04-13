@@ -1,5 +1,7 @@
 package com.example.cellidtracker
 
+import android.os.Handler
+import android.os.Looper
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +23,7 @@ object RootShell {
 
     // 給 streaming loop 知道「使用者想停了」
     private val stopRequested = AtomicBoolean(false)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 一次性版本（非串流），給簡單指令用，保留。 */
     fun runAsRoot(command: String): ShellResult {
@@ -63,14 +66,38 @@ object RootShell {
         val outReader = BufferedReader(InputStreamReader(process.inputStream))
         val errReader = BufferedReader(InputStreamReader(process.errorStream))
 
+        fun postStdoutBatch(lines: List<String>) {
+            if (lines.isEmpty()) return
+            val copied = lines.toList()
+            mainHandler.post {
+                copied.forEach(onStdoutLine)
+            }
+        }
+
+        fun postStderrBatch(lines: List<String>) {
+            if (lines.isEmpty()) return
+            val copied = lines.toList()
+            mainHandler.post {
+                copied.forEach(onStderrLine)
+            }
+        }
+
         val stdoutJob = launch(Dispatchers.IO) {
             try {
+                val batch = ArrayList<String>(64)
+                var lastFlushNanos = System.nanoTime()
                 while (!stopRequested.get()) {
                     val line = outReader.readLine() ?: break
-                    withContext(Dispatchers.Main) {
-                        onStdoutLine(line)
+                    batch.add(line)
+                    val now = System.nanoTime()
+                    val shouldFlush = batch.size >= 64 || (now - lastFlushNanos) >= 50_000_000L
+                    if (shouldFlush) {
+                        postStdoutBatch(batch)
+                        batch.clear()
+                        lastFlushNanos = now
                     }
                 }
+                postStdoutBatch(batch)
             } catch (_: Exception) {
                 // 通常是因為 process 被 destroy，忽略即可
             }
@@ -78,12 +105,20 @@ object RootShell {
 
         val stderrJob = launch(Dispatchers.IO) {
             try {
+                val batch = ArrayList<String>(32)
+                var lastFlushNanos = System.nanoTime()
                 while (!stopRequested.get()) {
                     val line = errReader.readLine() ?: break
-                    withContext(Dispatchers.Main) {
-                        onStderrLine(line)
+                    batch.add(line)
+                    val now = System.nanoTime()
+                    val shouldFlush = batch.size >= 32 || (now - lastFlushNanos) >= 50_000_000L
+                    if (shouldFlush) {
+                        postStderrBatch(batch)
+                        batch.clear()
+                        lastFlushNanos = now
                     }
                 }
+                postStderrBatch(batch)
             } catch (_: Exception) {
                 // 同上
             }
