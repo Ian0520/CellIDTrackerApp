@@ -504,6 +504,19 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     currentSipState = SipState::BUSY;
     state.retryImmediate = true;
   }
+  else if (status == 401 || status == 407) {
+    // Unauthorized / Proxy Authentication Required.
+    // In DoS probing mode we don't complete SIP auth here, so force a retry cycle.
+    if (state.retryInvitePending) {
+      currentSipState = SipState::BUSY;
+    }
+    else if (currentSipApp == SipApp::DOS) {
+      currentSipState = SipState::BUSY;
+      state.retryImmediate = true;
+    } else {
+      currentSipState = SipState::ACK;
+    }
+  }
   else if (status == 481) {
     // 481: Call/Transaction Does Not Exist.
     // For DoS probing, this should continue probing instead of ending the app flow.
