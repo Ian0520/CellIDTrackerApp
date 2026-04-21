@@ -60,6 +60,7 @@ data class ParsedCellFromLog(
 )
 
 data class ProbeHistory(
+    val sessionName: String,
     val mcc: Int,
     val mnc: Int,
     val lac: Int,
@@ -75,6 +76,7 @@ data class ProbeHistory(
 
 private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
     ProbeHistory(
+        sessionName = sessionName,
         mcc = mcc,
         mnc = mnc,
         lac = lac,
@@ -90,6 +92,7 @@ private fun ProbeHistoryEntity.toDomain(): ProbeHistory =
 
 private fun ProbeHistory.toEntity(): ProbeHistoryEntity =
     ProbeHistoryEntity(
+        sessionName = sessionName,
         victim = victim,
         mcc = mcc,
         mnc = mnc,
@@ -149,6 +152,15 @@ private fun decodeTowers(json: String): List<CellTowerParams> =
         }
     }.getOrDefault(emptyList())
 
+private fun defaultSessionName(): String =
+    DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.now())
+        .let { "session_$it" }
+
+private fun safeFilePart(value: String): String =
+    value.ifBlank { "session" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
+
 suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withContext(Dispatchers.IO) {
     val all = db.historyDao().getAll()
     val arr = JSONArray()
@@ -156,6 +168,7 @@ suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withC
         arr.put(
             JSONObject()
                 .put("victim", e.victim)
+                .put("session", e.sessionName)
                 .put("mcc", e.mcc)
                 .put("mnc", e.mnc)
                 .put("lac", e.lac)
@@ -169,6 +182,35 @@ suspend fun exportHistoryToFile(ctx: Context, db: HistoryDatabase): File = withC
         )
     }
     val outFile = File(ctx.getExternalFilesDir(null), "probe_history.json")
+    outFile.writeText(arr.toString(2))
+    outFile
+}
+
+suspend fun exportSessionHistoryToFile(
+    ctx: Context,
+    db: HistoryDatabase,
+    sessionName: String
+): File = withContext(Dispatchers.IO) {
+    val entries = db.historyDao().getHistoryForSession(sessionName)
+    val arr = JSONArray()
+    entries.forEach { e ->
+        arr.put(
+            JSONObject()
+                .put("victim", e.victim)
+                .put("session", e.sessionName)
+                .put("mcc", e.mcc)
+                .put("mnc", e.mnc)
+                .put("lac", e.lac)
+                .put("cid", e.cid)
+                .put("lat", e.lat)
+                .put("lon", e.lon)
+                .put("accuracy", e.accuracy)
+                .put("timestampMillis", e.timestampMillis)
+                .put("towersCount", e.towersCount)
+                .put("towers", JSONArray(e.towersJson))
+        )
+    }
+    val outFile = File(ctx.getExternalFilesDir(null), "probe_history_${safeFilePart(sessionName)}.json")
     outFile.writeText(arr.toString(2))
     outFile
 }
@@ -330,6 +372,7 @@ class MainActivity : ComponentActivity() {
                 val ctx = LocalContext.current
                 var selectedTab by remember { mutableStateOf(0) } // 0 = probe, 1 = log, 2 = history
 
+                var sessionInput by remember { mutableStateOf(defaultSessionName()) }
                 var victimInput by remember { mutableStateOf("") }
                 var output by remember { mutableStateOf("Log will appear here.") }
                 var isRootRunning by remember { mutableStateOf(false) }
@@ -345,6 +388,7 @@ class MainActivity : ComponentActivity() {
                     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
                 }
                 val recentTowers = remember { mutableStateListOf<CellTowerParams>() }
+                val selectedSessionName = sessionInput.trim().ifBlank { "default" }
                 val probeIntervalOptions = remember { listOf(6, 10, 20, 30, 60) }
                 var selectedProbeIntervalSeconds by remember { mutableStateOf(30) }
                 var probeIntervalExpanded by remember { mutableStateOf(false) }
@@ -421,6 +465,52 @@ class MainActivity : ComponentActivity() {
                                     verticalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.verticalScroll(probeColumnScrollState)
                                 ) {
+                                    // Session card
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = MaterialTheme.shapes.medium,
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.surface
+                                        )
+                                    ) {
+                                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            Text("Session", style = MaterialTheme.typography.titleMedium)
+                                            OutlinedTextField(
+                                                value = sessionInput,
+                                                onValueChange = { sessionInput = it },
+                                                label = { Text("Session name") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                supportingText = { Text("Stored with new probe records and used for session export") }
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                OutlinedButton(
+                                                    onClick = { sessionInput = defaultSessionName() },
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Text("New session")
+                                                }
+                                                Button(
+                                                    onClick = {
+                                                        scope.launch {
+                                                            try {
+                                                                val file = exportSessionHistoryToFile(ctx, db, selectedSessionName)
+                                                                snackbarHostState.showSnackbar("Exported session to: ${file.absolutePath}")
+                                                            } catch (e: Exception) {
+                                                                snackbarHostState.showSnackbar("Session export failed: ${e.message ?: e}")
+                                                            }
+                                                        }
+                                                    },
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Text("Export session")
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     // Victim input card
                                     Card(
                                         modifier = Modifier.fillMaxWidth(),
@@ -692,17 +782,18 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                             cellLocation = loc
                                                                                             val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
                                                                                             val entry = ProbeHistory(
-                                                                                                parsed.mcc,
-                                                                                                parsed.mnc,
-                                                                                                parsed.lac,
-                                                                                                parsed.cid,
-                                                                                                loc.lat,
-                                                                                                loc.lon,
-                                                                                                loc.range,
-                                                                                                System.currentTimeMillis(),
-                                                                                                victimKey,
-                                                                                                payloadUsed.size,
-                                                                                                encodeTowers(payloadUsed)
+                                                                                                sessionName = selectedSessionName,
+                                                                                                mcc = parsed.mcc,
+                                                                                                mnc = parsed.mnc,
+                                                                                                lac = parsed.lac,
+                                                                                                cid = parsed.cid,
+                                                                                                lat = loc.lat,
+                                                                                                lon = loc.lon,
+                                                                                                accuracy = loc.range,
+                                                                                                timestampMillis = System.currentTimeMillis(),
+                                                                                                victim = victimKey,
+                                                                                                towersCount = payloadUsed.size,
+                                                                                                towersJson = encodeTowers(payloadUsed)
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -723,17 +814,18 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                                             cellLocation = null
                                                                                             val victimKey = currentVictimFromList(assets.workDir).ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
                                                                                             val entry = ProbeHistory(
-                                                                                                parsed.mcc,
-                                                                                                parsed.mnc,
-                                                                                                parsed.lac,
-                                                                                                parsed.cid,
-                                                                                                null,
-                                                                                                null,
-                                                                                                null,
-                                                                                                System.currentTimeMillis(),
-                                                                                                victimKey,
-                                                                                                payloadUsed.size,
-                                                                                                encodeTowers(payloadUsed)
+                                                                                                sessionName = selectedSessionName,
+                                                                                                mcc = parsed.mcc,
+                                                                                                mnc = parsed.mnc,
+                                                                                                lac = parsed.lac,
+                                                                                                cid = parsed.cid,
+                                                                                                lat = null,
+                                                                                                lon = null,
+                                                                                                accuracy = null,
+                                                                                                timestampMillis = System.currentTimeMillis(),
+                                                                                                victim = victimKey,
+                                                                                                towersCount = payloadUsed.size,
+                                                                                                towersJson = encodeTowers(payloadUsed)
                                                                                             )
                                                                                             val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
                                                                                             list.add(0, entry)
@@ -1068,6 +1160,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                 .fillMaxWidth()
                                                                 .clickable {
                                                                     victimInput = item.victim
+                                                                    sessionInput = item.sessionName.ifBlank { sessionInput }
                                                                     cellLocation = item.lat?.let { latVal ->
                                                                         item.lon?.let { lonVal ->
                                                                             CellLocationResult(latVal, lonVal, item.accuracy)
@@ -1097,6 +1190,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                             )
                                                             Text(
                                                                 "Victim: ${item.victim.ifBlank { "(unknown)" }}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                            Text(
+                                                                "Session: ${item.sessionName.ifBlank { "(none)" }}",
                                                                 style = MaterialTheme.typography.bodySmall,
                                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )

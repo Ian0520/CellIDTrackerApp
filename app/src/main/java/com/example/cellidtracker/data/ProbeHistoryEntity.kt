@@ -6,6 +6,7 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "probe_history")
 data class ProbeHistoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionName: String,
     val victim: String,
     val mcc: Int,
     val mnc: Int,

@@ -16,6 +16,9 @@ interface ProbeHistoryDao {
     @Query("SELECT * FROM probe_history ORDER BY timestampMillis DESC")
     suspend fun getAll(): List<ProbeHistoryEntity>
 
+    @Query("SELECT * FROM probe_history WHERE sessionName = :sessionName ORDER BY timestampMillis DESC")
+    suspend fun getHistoryForSession(sessionName: String): List<ProbeHistoryEntity>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(entry: ProbeHistoryEntity): Long
 
