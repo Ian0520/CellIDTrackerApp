@@ -14,8 +14,6 @@ import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
 import com.example.cellidtracker.experiment.exportExperimentSessionToFile
-import com.example.cellidtracker.geolocation.buildCandidatePayloads
-import com.example.cellidtracker.geolocation.selectBestLocation
 import com.example.cellidtracker.history.ProbeHistory
 import com.example.cellidtracker.history.encodeTowers
 import com.example.cellidtracker.history.exportHistoryToFile
@@ -47,6 +45,11 @@ private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
 private const val DELTA_MATCH_WINDOW_MILLIS = 2000L
 private const val LOGCAT_TAG = "CellIDTracker"
+private const val MAX_LOG_LINES = 600
+private const val MAX_LOG_LINE_CHARS = 800
+private const val LOG_PREVIEW_LINES = 8
+private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
+private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
@@ -122,6 +125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var userStopRequested by mutableStateOf(false)
     private var probeParsedCell by mutableStateOf(false)
     private var activeExperimentSessionDbId: Long? = null
+    private var forwardedLogcatLineCount = 0
 
     init {
         stopProbeForegroundServiceIfIdle()
@@ -142,6 +146,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleShowLog() {
         showLog = !showLog
+        // Rebuild full output immediately when user opens the log panel.
+        logDirty.set(true)
     }
 
     fun selectHistoryVictim(victim: String) {
@@ -315,7 +321,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun startLogBufferFlushLoop() {
         viewModelScope.launch {
             while (true) {
-                delay(250)
+                delay(400)
                 flushLogBufferIfDirty()
             }
         }
@@ -330,8 +336,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        output = logLines.joinToString("\n")
-        logPreview = logLines.takeLast(6).joinToString("\n")
+        logPreview = logLines.takeLast(LOG_PREVIEW_LINES).joinToString("\n")
+        if (showLog) {
+            output = logLines.joinToString("\n")
+        }
     }
 
     private suspend fun updateVictimNumber(victimNum: String): VictimUpdateResult {
@@ -508,20 +516,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         parsed: ParsedCellFromLog,
         deltaMs: Long?
     ) {
-        val towersForQuery = recentTowers.toList().ifEmpty { listOf(parsed.toTowerParams()) }
-        val (candidatePayloads, siteCount) = buildCandidatePayloads(towersForQuery)
+        val payloadUsed = listOf(parsed.toTowerParams())
 
         appendLogText(
             """
 
 [Geo] querying Google Geolocation...
 mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
-[Geo] raw towers=${recentTowers.size}, grouped sites=$siteCount, candidate payloads=${candidatePayloads.size}
+[Geo] payload towers=1 (latest parsed cell only)
 """.trimIndent()
         )
 
-        val (result, payloadUsed) = withContext(Dispatchers.IO) {
-            selectBestLocation(towersForQuery)
+        val result = withContext(Dispatchers.IO) {
+            GoogleGeolocationClient.queryByCells(payloadUsed)
         }
 
         appendLogText(
@@ -589,6 +596,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 
         val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
         list.add(0, entry)
+        if (list.size > MAX_IN_MEMORY_HISTORY_PER_VICTIM) {
+            list.removeRange(MAX_IN_MEMORY_HISTORY_PER_VICTIM, list.size)
+        }
         selectedHistoryVictim = victimKey
 
         withContext(Dispatchers.IO) {
@@ -790,12 +800,25 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 
     private fun appendLogText(text: String) {
         text.lineSequence().forEach { line ->
-            if (logLines.size >= 1200) {
+            val boundedLine = if (line.length > MAX_LOG_LINE_CHARS) {
+                line.take(MAX_LOG_LINE_CHARS) + " ...[truncated]"
+            } else {
+                line
+            }
+            if (logLines.size >= MAX_LOG_LINES) {
                 logLines.removeFirst()
             }
-            logLines.addLast(line)
-            if (line.isNotBlank()) {
-                Log.i(LOGCAT_TAG, line)
+            logLines.addLast(boundedLine)
+            if (boundedLine.isNotBlank()) {
+                forwardedLogcatLineCount += 1
+                val mustForward = boundedLine.contains(INTERCARRIER_MARKER) ||
+                    boundedLine.contains("100: Trying") ||
+                    boundedLine.contains("500: Timeout") ||
+                    boundedLine.contains("183: Session Progress") ||
+                    boundedLine.contains("[ERR]")
+                if (mustForward || forwardedLogcatLineCount % LOGCAT_SAMPLE_EVERY_N_LINES == 0) {
+                    Log.i(LOGCAT_TAG, boundedLine)
+                }
             }
         }
         logDirty.set(true)

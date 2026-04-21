@@ -510,6 +510,7 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
   std::vector<SipPair> sips;
   std::unordered_map<std::string, SipPair> calleeSip;
   int targets = victimList.size();
+  session.currentSipApp = SipApp::DOS;
 
   // Send invite to the multiple victim
   for (int i = 0 ; i < targets ; i++) {
@@ -742,6 +743,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
     SipMessage(util::context.configFolder),
     SipMessage(util::context.configFolder)
   };
+  session.currentSipApp = SipApp::DOS;
   auto &&[front, back] = sips;
 
   front.initialize(session.config.local, session.config.remote, util::context.callerId, calleeId, session.state.secver,
