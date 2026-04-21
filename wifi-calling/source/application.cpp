@@ -476,7 +476,7 @@ void Application::startRemoteCallServer(pollfd& pfd, int nReady, const std::vect
 
             std::cout << "Waiting for the call result..." << std::endl;
 
-            startPeriodicUpload(30);
+            startPeriodicUpload(util::context.probeIntervalSeconds);
 
             auto probeThread = std::thread([this]() {
                 while(!util::context.shouldStop && !adateToNewEnvironment) {
@@ -598,7 +598,7 @@ void Application::MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::s
           if (timeToUpload) {
             timeToUpload.store(false);
             std::cout << "\nTime to upload victim location" << std::endl;
-            startPeriodicUpload(30);
+            startPeriodicUpload(util::context.probeIntervalSeconds);
             if (uploadAdaptiveCellularInfo()) {
               std::cout << "Upload victim location successfully" << std::endl;
             } else {

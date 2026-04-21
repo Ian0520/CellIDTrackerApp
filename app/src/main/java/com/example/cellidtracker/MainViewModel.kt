@@ -50,6 +50,7 @@ private const val MAX_LOG_LINE_CHARS = 800
 private const val LOG_PREVIEW_LINES = 8
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
+val PROBE_INTERVAL_OPTIONS_SECONDS = listOf(6, 10, 20, 30, 60)
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
@@ -107,6 +108,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var isMoving by mutableStateOf(false)
         private set
+    var selectedProbeIntervalSeconds by mutableStateOf(30)
+        private set
     var selectedHistoryVictim by mutableStateOf<String?>(null)
         private set
     var mccInput by mutableStateOf("")
@@ -142,6 +145,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onMovingChange(value: Boolean) {
         isMoving = value
+    }
+
+    fun onProbeIntervalChange(value: Int) {
+        if (value in PROBE_INTERVAL_OPTIONS_SECONDS) {
+            selectedProbeIntervalSeconds = value
+        }
     }
 
     fun toggleShowLog() {
@@ -640,7 +649,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private fun buildProbeCommand(assets: ProbeAssets): String {
-        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
+        return "cd ${assets.workDir.absolutePath} && PROBE_INTERVAL_SECONDS=$selectedProbeIntervalSeconds GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {
