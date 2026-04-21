@@ -315,7 +315,7 @@ private fun ensureProbeAssets(ctx: android.content.Context): ProbeAssets {
     return ProbeAssets(workDir = workDir, bin = binDest, configDir = configDir)
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -345,6 +345,9 @@ class MainActivity : ComponentActivity() {
                     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
                 }
                 val recentTowers = remember { mutableStateListOf<CellTowerParams>() }
+                val probeIntervalOptions = remember { listOf(6, 10, 20, 30, 60) }
+                var selectedProbeIntervalSeconds by remember { mutableStateOf(30) }
+                var probeIntervalExpanded by remember { mutableStateOf(false) }
 
                 // Manual geolocation fallback
                 var mccInput by remember { mutableStateOf("") }
@@ -534,6 +537,40 @@ class MainActivity : ComponentActivity() {
                                             }
 
                                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                ExposedDropdownMenuBox(
+                                                    expanded = probeIntervalExpanded,
+                                                    onExpandedChange = { probeIntervalExpanded = it },
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    OutlinedTextField(
+                                                        value = "${selectedProbeIntervalSeconds}s",
+                                                        onValueChange = {},
+                                                        readOnly = true,
+                                                        label = { Text("Probe frequency") },
+                                                        trailingIcon = {
+                                                            ExposedDropdownMenuDefaults.TrailingIcon(
+                                                                expanded = probeIntervalExpanded
+                                                            )
+                                                        },
+                                                        modifier = Modifier
+                                                            .menuAnchor()
+                                                            .fillMaxWidth()
+                                                    )
+                                                    ExposedDropdownMenu(
+                                                        expanded = probeIntervalExpanded,
+                                                        onDismissRequest = { probeIntervalExpanded = false }
+                                                    ) {
+                                                        probeIntervalOptions.forEach { seconds ->
+                                                            DropdownMenuItem(
+                                                                text = { Text("${seconds}s") },
+                                                                onClick = {
+                                                                    selectedProbeIntervalSeconds = seconds
+                                                                    probeIntervalExpanded = false
+                                                                }
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                                 Text("Latest probed result", style = MaterialTheme.typography.labelLarge)
                                                 if (mccInput.isNotBlank() || mncInput.isNotBlank() || lacInput.isNotBlank() || cidInput.isNotBlank()) {
                                                     FlowRow(
@@ -595,7 +632,7 @@ class MainActivity : ComponentActivity() {
                                                                         throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                                     }
                                                                 }
-                                                                val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
+                                                                val cmd = "cd ${assets.workDir.absolutePath} && PROBE_INTERVAL_SECONDS=$selectedProbeIntervalSeconds GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
                                                                 val accumulator = mutableMapOf<String, Int>()
 
                                                             output = buildString {
@@ -775,7 +812,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                                                                     throw IOException("Bundled probe binary/config not found: ${e.message}")
                                                                     }
                                                                 }
-                                                                val cmd = "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
+                                                                val cmd = "cd ${assets.workDir.absolutePath} && PROBE_INTERVAL_SECONDS=$selectedProbeIntervalSeconds GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
                                                                 output = buildString {
                                                                     appendLine("Running inter-carrier test (root)...")
                                                                     appendLine("Command:")

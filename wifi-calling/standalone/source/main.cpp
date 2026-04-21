@@ -3,6 +3,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cxxopts.hpp>
 #include <iostream>
 #include <span>
@@ -32,6 +33,7 @@ int main(int argc, char* argv[]) {
     ("u,unavailability-eval", "Evaluate one call unavailability", cxxopts::value<bool>()->default_value("false"))
     ("d,detect-eval", "Evaluate one call detect", cxxopts::value<bool>()->default_value("false"))
     ("e,enable-input", "Enable manual input of phone numbers", cxxopts::value<bool>()->default_value("false"))
+    ("probe-interval", "Probe interval in seconds", cxxopts::value<int>()->default_value("30"))
     ("v,verbose", "Verbose output", cxxopts::value<int>()->default_value("1"))
     ("h,help", "Help", cxxopts::value<bool>());
   // clang-format on
@@ -53,6 +55,17 @@ int main(int argc, char* argv[]) {
   util::context.rlRemoteCellIDProber = result["rl-assisted-remote-cellid-prober"].as<bool>();
   util::context.unavailabilityEval = result["unavailability-eval"].as<bool>();
   util::context.detectEval = result["detect-eval"].as<bool>();
+  int probeIntervalSeconds = result["probe-interval"].as<int>();
+  if (result.count("probe-interval") == 0) {
+    if (const char* envInterval = std::getenv("PROBE_INTERVAL_SECONDS")) {
+      try {
+        probeIntervalSeconds = std::stoi(envInterval);
+      } catch (...) {
+        probeIntervalSeconds = 30;
+      }
+    }
+  }
+  util::context.probeIntervalSeconds = probeIntervalSeconds > 0 ? probeIntervalSeconds : 30;
 
   util::context.verbose = result["verbose"].as<int>();
   util::context.calleeId = createVictimList(result["enable-input"].as<bool>());
