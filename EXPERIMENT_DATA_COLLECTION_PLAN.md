@@ -264,9 +264,17 @@ The current manual-ground-truth fields are not part of the desired end state.
 - Added startup compatibility migration for previously inconsistent paused schemas:
   - DB migration to v7 recreates experiment tables if v6 legacy shape is detected.
 - Added parser-side duplicate suppression for native log bursts:
-  - app now suppresses repeated parsed outputs by **probe-cycle boundary** (`[intercarrier]` marker), not by a long fixed time window
+  - app now suppresses repeated parsed outputs by **probe-cycle boundary** (`100: Trying` marker), not by a long fixed time window
   - this avoids the previous over-suppression bug where repeated probes in the same cell were incorrectly dropped after the first sample
   - this directly addresses duplicate history/session entries caused by native retransmissions and immediate retry behavior (e.g., after `500/408/486`)
+- Added app-side commit guard against duplicate geolocation/history writes:
+  - if the same `(mcc,mnc,lac,cid,deltaMs)` is about to be committed again within a short window, it is dropped
+  - this prevents parser burst edge cases from triggering repeated geolocation requests for one probe cycle
+- Added canonical native probe event path to reduce log-coupled duplication:
+  - native now emits one structured line per accepted probe transaction:
+    - `[probe_event] call_id=... status=... delta_ms=... invite_ms=... pr_ms=... mcc=... mnc=... lac=... cid=...`
+  - app-side history/geolocation now consumes this structured event directly instead of reconstructing samples from raw multi-line `mcc/mnc/lac/cellId` log text
+  - app deduplicates by native `call_id`, so repeated `183 Session Progress` retransmissions in the same transaction cannot create repeated history entries
 - Fixed `deltaMs` binding per saved probe sample:
   - app now uses delta-anchored pairing and supports both native line orders:
     - cell fields first then `[intercarrier] delta_ms=...`
@@ -307,6 +315,9 @@ The current manual-ground-truth fields are not part of the desired end state.
     - on `500/486/408`, retry now sends `CANCEL` first and waits for termination (`487`/`200`) before arming the new INVITE
     - includes timeout fallback when cancel response is missing, to avoid retry deadlock
     - this targets overlap between old/new transactions that can skew restart-cycle `delta_ms` low
+  - removed probe-mode native geolocation duplication:
+    - in `remoteCellIDProber` mode, native no longer calls Google Geolocation / Reverse Geocoding inside `extractCellularInfo`
+    - app side remains the single owner of geolocation lookup and history/session attachment per accepted probe sample
   - **requires rebuilding and rebundling the `spoof` binary into app assets to take effect on device**
 
 ### Important Note About Migration

@@ -48,6 +48,9 @@ struct State {
   // 1) send CANCEL, 2) wait for termination (or timeout fallback), 3) send fresh INVITE.
   bool retryCancelPending{false};
   bool retryInvitePending{false};
+  // Emit one structured probe event per fresh INVITE transaction.
+  bool probeEventEmitted{false};
+  int firstProvisionalStatus{0};
 
   bool ack;
   bool psh;

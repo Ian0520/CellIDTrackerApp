@@ -70,6 +70,8 @@ void Application::armInviteTiming(const std::string& invite) {
   session.state.activeInviteBranch = extractBranchFromSip(invite);
   session.state.retryCancelPending = false;
   session.state.retryInvitePending = false;
+  session.state.probeEventEmitted = false;
+  session.state.firstProvisionalStatus = 0;
 }
 
 void Application::extractCellularInfo(const std::string& input, const std::string& phoneNumber) {
@@ -91,6 +93,8 @@ void Application::extractCellularInfo(const std::string& input, const std::strin
     cellInformation cellInfo(networkType, cellId);
 
     auto &&it = Application::victimLocation[phoneNumber];
+    const bool hadPreviousCell = !it.cellIdentity.empty();
+    it = cellInfo;
 
     std::cout << "Find victim " << phoneNumber << " cell information:" << std::endl;
     std::cout << "Network type: " << networkType << std::endl;
@@ -109,7 +113,11 @@ void Application::extractCellularInfo(const std::string& input, const std::strin
       
       Application::createTimestampFile(cellId);
 
-      if (it.cellIdentity != "") return;
+      // Probe app mode (remoteCellIDProber) performs geolocation on the app side.
+      // Avoid duplicate Google API calls from native + app for the same probe cycle.
+      if (util::context.remoteCellIDProber) return;
+
+      if (hadPreviousCell) return;
 
       std::string latAndlng = getGeoLocation(cellId, lac, mcc, mnc, 0, phoneNumber);
       std::string res = getReverseGeoCoding(latAndlng);
@@ -120,9 +128,6 @@ void Application::extractCellularInfo(const std::string& input, const std::strin
     } else {
       std::cerr << "Invalid cellId format" << std::endl;
     }
-
-    
-    Application::victimLocation[phoneNumber] = cellInfo;
   }
 }
 

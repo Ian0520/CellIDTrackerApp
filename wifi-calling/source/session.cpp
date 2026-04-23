@@ -31,6 +31,13 @@
 constexpr size_t BUFFER_THRESHOLD = 1 << 16;
 
 namespace {
+  struct ParsedCellInfo {
+    int mcc;
+    int mnc;
+    int lac;
+    int cid;
+  };
+
 #pragma pack(push)
 #pragma pack(1)
   struct ESPHeader {
@@ -69,6 +76,31 @@ namespace {
     if (first == std::string::npos) return "";
     const auto last = input.find_last_not_of(" \t\r\n");
     return input.substr(first, last - first + 1);
+  }
+
+  std::optional<ParsedCellInfo> parseCellInfoFromSip(const std::string& fullbody) {
+    static const std::regex networkInfoRegex(
+      R"((?:(?:Cellular-Network-Info)|(?:P-Access-Network-Info)):\s*([^;]+);[\s\S]*?utran-cell-id-3gpp=([A-Fa-f0-9]+))",
+      std::regex_constants::ECMAScript
+    );
+    static const std::regex cellIdRegex(R"(^([0-9A-Fa-f]{3})([0-9A-Fa-f]{2})([0-9A-Fa-f]{4})([0-9A-Fa-f]+)$)");
+
+    std::smatch match;
+    if (!std::regex_search(fullbody, match, networkInfoRegex) || match.size() < 3) {
+      return std::nullopt;
+    }
+
+    const std::string cellIdHex = match[2].str();
+    if (!std::regex_match(cellIdHex, match, cellIdRegex) || match.size() < 5) {
+      return std::nullopt;
+    }
+
+    ParsedCellInfo parsed{};
+    parsed.mcc = std::stoi(match[1].str());
+    parsed.mnc = std::stoi(match[2].str());
+    parsed.lac = static_cast<int>(std::stoul(match[3].str(), nullptr, 16));
+    parsed.cid = static_cast<int>(std::stoull(match[4].str(), nullptr, 16));
+    return parsed;
   }
 }  // namespace
 
@@ -345,10 +377,6 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // if (util::context.verbose > 2) 
     std::cout << "calleeId: " << state.calleeId << std::endl;
   }
-  
-  // Extract vicitm location
-  Application::extractCellularInfo(fullbody, state.calleeId);
- 
 
   std::string sipHead(buffer.begin(), buffer.end());
   int status = 0;
@@ -404,6 +432,13 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
   }
 
+  if (!util::context.remoteCellIDProber) {
+    // Keep legacy cellular extraction behavior for non-probe-app modes.
+    Application::extractCellularInfo(fullbody, state.calleeId);
+  }
+
+  const auto parsedCellInfo = (status > 0) ? parseCellInfoFromSip(fullbody) : std::nullopt;
+
   auto now = std::chrono::steady_clock::now();
   if (status == 100) {
     state.t_trying = now;
@@ -447,6 +482,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
+      state.firstProvisionalStatus = 183;
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
         std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
@@ -467,6 +503,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // Ringing
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
+      state.firstProvisionalStatus = 180;
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
         std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
@@ -543,9 +580,30 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       currentSipState = SipState::ACK;
     }
   }
-  
 
-  
+  if (util::context.remoteCellIDProber &&
+      !state.probeEventEmitted &&
+      parsedCellInfo.has_value() &&
+      state.t_invite.has_value() &&
+      state.t_pr.has_value()) {
+    const auto inviteMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count();
+    const auto prMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count();
+    const auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
+    const int eventStatus = state.firstProvisionalStatus > 0 ? state.firstProvisionalStatus : status;
+    const auto& cell = *parsedCellInfo;
+    std::cout << "[probe_event] call_id=" << state.activeInviteCallId
+              << " status=" << eventStatus
+              << " delta_ms=" << delta
+              << " invite_ms=" << inviteMs
+              << " pr_ms=" << prMs
+              << " mcc=" << cell.mcc
+              << " mnc=" << cell.mnc
+              << " lac=" << cell.lac
+              << " cid=" << cell.cid
+              << std::endl;
+    state.probeEventEmitted = true;
+  }
+
   return true;
 }
 

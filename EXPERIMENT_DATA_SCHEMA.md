@@ -48,7 +48,7 @@ Each item in `samples`:
 | `geolocationError` | string or null | Error message when failed |
 | `towersCount` | int | Number of towers sent to geolocation |
 | `towersJson` | string | JSON string (not array type) containing towers |
-| `deltaMs` | long or null | Parsed from native log `delta_ms=...` |
+| `deltaMs` | long or null | Parsed from native structured probe event (`[probe_event] ... delta_ms=...`) |
 | `moving` | boolean | Manual UI toggle snapshot (not GPS-derived) |
 
 `towersJson` string decodes to array of objects:
@@ -74,8 +74,8 @@ Notes:
 ### 1.3 Probe-side semantics important for analysis
 
 - `moving` is operator input from app switch, not measured movement.
-- `deltaMs` may be `null` when no `delta_ms=...` line is available for that accepted probe sample.
-- The app uses dedupe logic to keep at most one accepted parsed cell per probe cycle.
+- `deltaMs` may be `null` when no native `[probe_event]` line is available for a probe cycle.
+- The app uses native `call_id` from `[probe_event]` as the primary dedupe key to prevent duplicate history entries from repeated `183` retransmissions.
 
 ---
 
