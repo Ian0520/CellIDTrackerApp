@@ -509,8 +509,16 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
         std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
-    // cancel immediately for stealth probing
-    setSipState(SipState::CANCEL, "183 received, send CANCEL");
+    // For DoS probing, keep PRACK/SPROG progression and let CallDoS rollover
+    // based on carrier threshold instead of immediate cancel on every 183.
+    // For non-DoS flows, preserve immediate cancel behavior.
+    if (currentSipApp == SipApp::DOS) {
+      if (util::context.verbose > 1) {
+        std::cout << "[fsm] hold DOS provisional flow on 183 (no immediate CANCEL)" << std::endl;
+      }
+    } else {
+      setSipState(SipState::CANCEL, "183 received, send CANCEL");
+    }
   }
   else if (status == 180) {
     // Ringing
