@@ -2,6 +2,7 @@ package com.example.cellidtracker
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,7 @@ data class ShellResult(
 )
 
 object RootShell {
+    private const val TAG = "RootShell"
 
     @Volatile
     private var currentProcess: Process? = null
@@ -70,7 +72,13 @@ object RootShell {
             if (lines.isEmpty()) return
             val copied = lines.toList()
             mainHandler.post {
-                copied.forEach(onStdoutLine)
+                copied.forEach { line ->
+                    try {
+                        onStdoutLine(line)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "stdout callback crashed for line=${line.take(120)}", t)
+                    }
+                }
             }
         }
 
@@ -78,7 +86,13 @@ object RootShell {
             if (lines.isEmpty()) return
             val copied = lines.toList()
             mainHandler.post {
-                copied.forEach(onStderrLine)
+                copied.forEach { line ->
+                    try {
+                        onStderrLine(line)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "stderr callback crashed for line=${line.take(120)}", t)
+                    }
+                }
             }
         }
 

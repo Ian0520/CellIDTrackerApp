@@ -79,22 +79,18 @@ The ground-truth app must **not**:
 The offline analysis program must:
 - load the probe session file
 - load the truth session file
-- verify that the session IDs match
 - match each probe sample to truth data by timestamp
 - compute experiment metrics
 - output a report or table for later inspection
 
 ## Session Model
 
-Both apps must share a common `sessionId`.
-
-The `sessionId` must be:
-- globally unique
-- stable for the entire session
+Each app has its own `sessionId` generated at session start:
+- timestamp format `yyyyMMdd_HHmmss_SSS`
+- stable for the entire local session
 - stored in every exported file
 
-Recommended format:
-- UUID string
+Cross-app merge uses timestamp alignment (`recordedAtMillis`) rather than matching session IDs.
 
 Both exported files must also include:
 - `schemaVersion`
@@ -151,6 +147,8 @@ Each truth sample must include:
 - optional altitude / bearing if easy to collect
 - `movementClass`
 - optional `movementSource` (`auto` / `manual`) if operator override is supported
+- serving-cell snapshot fields (`servingCellObservedKey`, `servingCellStableKey`, RAT/MCC/MNC/area/id/PCI when available)
+- serving-cell transition labels (`servingCellChangeConfirmed`, `servingCellChangeSeq`, `millisSinceServingCellChange`)
 
 Recommended file name:
 - `truth_session_<sessionId>.json`
@@ -177,6 +175,20 @@ Recommended speed thresholds (m/s), tunable later:
 If speed is unavailable for a sample:
 - set `speedMps = null`
 - set `movementClass = unknown`
+
+### Ground-Truth Serving-Cell Change Labels (Updated 2026-04-24)
+
+Implemented in `LocationData` app:
+- capture registered serving-cell snapshot per ground-truth sample (same cadence as location sampling)
+- maintain debounced serving-cell tracker (2 consecutive samples on a new observed key)
+- emit per-sample labels:
+  - `servingCellChangeConfirmed` (true only at confirmed transition sample)
+  - `servingCellChangeSeq` (monotonic transition counter)
+  - `millisSinceServingCellChange`
+
+These labels are intended for probe-side merge:
+- for each probe sample timestamp, identify most recent prior confirmed serving-cell change
+- mark the first probe after each confirmed serving-cell change in offline analysis
 
 ## Matching Rules For Offline Analysis
 
@@ -264,9 +276,17 @@ The current manual-ground-truth fields are not part of the desired end state.
 - Added startup compatibility migration for previously inconsistent paused schemas:
   - DB migration to v7 recreates experiment tables if v6 legacy shape is detected.
 - Added parser-side duplicate suppression for native log bursts:
-  - app now suppresses repeated parsed outputs by **probe-cycle boundary** (`[intercarrier]` marker), not by a long fixed time window
+  - app now suppresses repeated parsed outputs by **probe-cycle boundary** (`100: Trying` marker), not by a long fixed time window
   - this avoids the previous over-suppression bug where repeated probes in the same cell were incorrectly dropped after the first sample
   - this directly addresses duplicate history/session entries caused by native retransmissions and immediate retry behavior (e.g., after `500/408/486`)
+- Added app-side commit guard against duplicate geolocation/history writes:
+  - if the same `(mcc,mnc,lac,cid,deltaMs)` is about to be committed again within a short window, it is dropped
+  - this prevents parser burst edge cases from triggering repeated geolocation requests for one probe cycle
+- Added canonical native probe event path to reduce log-coupled duplication:
+  - native now emits one structured line per accepted probe transaction:
+    - `[probe_event] call_id=... status=... delta_ms=... invite_ms=... pr_ms=... mcc=... mnc=... lac=... cid=...`
+  - app-side history/geolocation now consumes this structured event directly instead of reconstructing samples from raw multi-line `mcc/mnc/lac/cellId` log text
+  - app deduplicates by native `call_id`, so repeated `183 Session Progress` retransmissions in the same transaction cannot create repeated history entries
 - Fixed `deltaMs` binding per saved probe sample:
   - app now uses delta-anchored pairing and supports both native line orders:
     - cell fields first then `[intercarrier] delta_ms=...`
@@ -307,6 +327,9 @@ The current manual-ground-truth fields are not part of the desired end state.
     - on `500/486/408`, retry now sends `CANCEL` first and waits for termination (`487`/`200`) before arming the new INVITE
     - includes timeout fallback when cancel response is missing, to avoid retry deadlock
     - this targets overlap between old/new transactions that can skew restart-cycle `delta_ms` low
+  - removed probe-mode native geolocation duplication:
+    - in `remoteCellIDProber` mode, native no longer calls Google Geolocation / Reverse Geocoding inside `extractCellularInfo`
+    - app side remains the single owner of geolocation lookup and history/session attachment per accepted probe sample
   - **requires rebuilding and rebundling the `spoof` binary into app assets to take effect on device**
 
 ### Important Note About Migration

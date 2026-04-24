@@ -48,7 +48,7 @@ Each item in `samples`:
 | `geolocationError` | string or null | Error message when failed |
 | `towersCount` | int | Number of towers sent to geolocation |
 | `towersJson` | string | JSON string (not array type) containing towers |
-| `deltaMs` | long or null | Parsed from native log `delta_ms=...` |
+| `deltaMs` | long or null | Parsed from native structured probe event (`[probe_event] ... delta_ms=...`) |
 | `moving` | boolean | Manual UI toggle snapshot (not GPS-derived) |
 
 `towersJson` string decodes to array of objects:
@@ -74,8 +74,8 @@ Notes:
 ### 1.3 Probe-side semantics important for analysis
 
 - `moving` is operator input from app switch, not measured movement.
-- `deltaMs` may be `null` when no `delta_ms=...` line is available for that accepted probe sample.
-- The app uses dedupe logic to keep at most one accepted parsed cell per probe cycle.
+- `deltaMs` may be `null` when no native `[probe_event]` line is available for a probe cycle.
+- The app uses native `call_id` from `[probe_event]` as the primary dedupe key to prevent duplicate history entries from repeated `183` retransmissions.
 
 ---
 
@@ -92,9 +92,9 @@ Top-level JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schemaVersion` | int | Currently `1` |
+| `schemaVersion` | int | Currently `2` |
 | `appType` | string | `"ground_truth"` |
-| `sessionId` | string | User-specified or generated |
+| `sessionId` | string | Auto-generated timestamp ID (`yyyyMMdd_HHmmss_SSS`) |
 | `startedAtMillis` | long | Unix epoch milliseconds |
 | `endedAtMillis` | long | Unix epoch milliseconds |
 | `appName` | string | App label |
@@ -124,6 +124,18 @@ Each item in `samples`:
 | `speedAccuracyMps` | double or null | Speed accuracy |
 | `altitudeM` | double or null | Altitude |
 | `bearingDeg` | double or null | Bearing |
+| `servingCellObservedKey` | string or null | Observed registered serving-cell key at this sample |
+| `servingCellStableKey` | string or null | Debounced serving-cell key used for change tracking |
+| `servingCellRat` | string or null | RAT inferred from serving cell identity (`LTE/NR/...`) |
+| `servingCellMcc` | int or null | Serving-cell MCC when available |
+| `servingCellMnc` | int or null | Serving-cell MNC when available |
+| `servingCellAreaCode` | int or null | TAC/LAC/networkId (normalized) |
+| `servingCellId` | long or null | CI/CID/NCI/base-station ID (normalized) |
+| `servingCellPci` | int or null | PCI/PSC/CPID/base-station hint (normalized) |
+| `servingCellIsRegistered` | boolean or null | Registered flag from Telephony API |
+| `servingCellChangeConfirmed` | boolean | `true` only on the sample where a debounced serving-cell change is confirmed |
+| `servingCellChangeSeq` | int or null | Monotonic in-session change counter (starts at `1` on first confirmed change) |
+| `millisSinceServingCellChange` | long or null | Milliseconds since last confirmed serving-cell change |
 | `movementClass` | string | One of classes below |
 | `movementSource` | string | Currently `"auto"` |
 
@@ -133,6 +145,11 @@ Each item in `samples`:
 - `medium_move`: `1.8 .. < 4.5`
 - `fast_move`: `>= 4.5`
 - `unknown`: speed unavailable
+
+Serving-cell change detection:
+- Debounce threshold is 2 consecutive samples on the same new `servingCellObservedKey`.
+- First observed serving cell initializes baseline and does **not** increment `servingCellChangeSeq`.
+- `servingCellChangeConfirmed=true` marks the exact sample where baseline is switched to the new serving cell.
 
 ### 2.2 Runtime persistence file (not final export)
 
@@ -180,3 +197,5 @@ These fields are directly comparable across files.
 | Inter-carrier timing | `deltaMs` | N/A |
 | Movement label | `moving` (manual toggle) | `movementClass` (speed-derived) |
 | Speed | N/A | `speedMps` |
+| Serving-cell transition marker | N/A | `servingCellChangeConfirmed`, `servingCellChangeSeq`, `millisSinceServingCellChange` |
+| Serving-cell identity context | `mcc,mnc,lac,cid` (probe-side parsed from SIP) | `servingCell*` fields (ground-truth Telephony snapshot) |

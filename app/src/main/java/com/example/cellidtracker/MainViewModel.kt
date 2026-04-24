@@ -19,14 +19,12 @@ import com.example.cellidtracker.history.encodeTowers
 import com.example.cellidtracker.history.exportHistoryToFile
 import com.example.cellidtracker.history.toDomain
 import com.example.cellidtracker.history.toEntity
+import com.example.cellidtracker.probe.ProbeEventFromNative
 import com.example.cellidtracker.probe.ParsedCellFromLog
-import com.example.cellidtracker.probe.ProbeParseDeduperState
 import com.example.cellidtracker.probe.ProbeAssets
 import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
-import com.example.cellidtracker.probe.markProbeCycleBoundary
-import com.example.cellidtracker.probe.shouldAcceptParsedCell
-import com.example.cellidtracker.probe.tryParseCellFromStdoutLine
+import com.example.cellidtracker.probe.tryParseProbeEventFromStdoutLine
 import java.io.File
 import java.io.IOException
 import java.time.Instant
@@ -41,15 +39,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val INTERCARRIER_MARKER = "[intercarrier]"
+private const val TRYING_MARKER = "100: Trying"
 private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
 private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
-private const val DELTA_MATCH_WINDOW_MILLIS = 2000L
 private const val LOGCAT_TAG = "CellIDTracker"
 private const val MAX_LOG_LINES = 600
 private const val MAX_LOG_LINE_CHARS = 800
 private const val LOG_PREVIEW_LINES = 8
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
+private const val AUTO_RESTART_MAX_RETRIES = 3
+private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
+private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
@@ -68,13 +69,7 @@ private data class VictimUpdateResult(
 )
 
 private class ProbeStreamState {
-    val accumulator = mutableMapOf<String, Int>()
-    val deduper = ProbeParseDeduperState()
-    var pendingAssets: ProbeAssets? = null
-    var pendingParsed: ParsedCellFromLog? = null
-    var pendingParsedAtMillis: Long = 0
-    var cachedDeltaMs: Long? = null
-    var cachedDeltaAtMillis: Long = 0
+    val committedCallIds = hashSetOf<String>()
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -259,6 +254,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startProbe() {
+        if (isRootRunning || isIntercarrierRunning) {
+            showSnackbar("Probe already running")
+            return
+        }
+
         isRootRunning = true
         resetProbeRunState()
 
@@ -266,12 +266,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
-                val streamState = ProbeStreamState()
-                val exitCode = runProbeStreaming(prepared.command) { line ->
-                    handleProbeStdoutLine(line, prepared.assets, streamState)
+                var retryCount = 0
+
+                while (isRootRunning) {
+                    val streamState = ProbeStreamState()
+                    val exitCode = try {
+                        runProbeStreaming(prepared.command) { line ->
+                            runCatching {
+                                handleProbeStdoutLine(line, prepared.assets, streamState)
+                            }.onFailure { t ->
+                                Log.e(LOGCAT_TAG, "Probe stdout handler crashed", t)
+                                appendLogText("\n[ERR] stdout handler exception: ${t.message ?: t}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        appendLogText("\n[Auto-restart] probe runner exception: ${e.message ?: e}")
+                        -999
+                    }
+
+                    appendProcessDone(exitCode)
+
+                    val unexpectedExit = !userStopRequested && exitCode != 0
+                    if (!unexpectedExit) {
+                        if (!userStopRequested) {
+                            showSnackbar("Probe finished (exit $exitCode)")
+                        }
+                        break
+                    }
+
+                    if (retryCount >= AUTO_RESTART_MAX_RETRIES) {
+                        appendLogText(
+                            "\n[Auto-restart] max retries reached ($AUTO_RESTART_MAX_RETRIES). Stop restarting."
+                        )
+                        showSnackbar(
+                            "Probe exited unexpectedly (exit $exitCode). Auto-restart stopped after $AUTO_RESTART_MAX_RETRIES retries."
+                        )
+                        break
+                    }
+
+                    retryCount += 1
+                    val backoffMs = computeAutoRestartBackoffMs(retryCount)
+                    appendLogText(
+                        "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
+                    )
+                    delay(backoffMs)
+                    if (userStopRequested || !isRootRunning) break
+                    appendLogText("\n[Auto-restart] restarting probe now...")
                 }
-                appendProcessDone(exitCode)
-                showSnackbar("Probe finished (exit $exitCode)")
             } catch (e: Exception) {
                 replaceLogText("Probe failed: ${e.message ?: e}")
                 showSnackbar("Probe failed: ${e.message ?: e}")
@@ -300,7 +341,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 startProbeForegroundService(mode = "inter-carrier")
                 val prepared = prepareProbeRun("Running inter-carrier test (root)...")
                 val exitCode = runProbeStreaming(prepared.command) { line ->
-                    handleIntercarrierStdoutLine(line)
+                    runCatching {
+                        handleIntercarrierStdoutLine(line)
+                    }.onFailure { t ->
+                        Log.e(LOGCAT_TAG, "Intercarrier stdout handler crashed", t)
+                        appendLogText("\n[ERR] intercarrier stdout handler exception: ${t.message ?: t}")
+                    }
                 }
                 appendProcessDone(exitCode)
                 showSnackbar("Inter-carrier test finished (exit $exitCode)")
@@ -407,7 +453,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RootShell.runAsRootStreaming(
             command = command,
             onStdoutLine = onStdoutLine,
-            onStderrLine = { line -> appendLogText("\n[ERR] $line") }
+            onStderrLine = { line ->
+                runCatching {
+                    appendLogText("\n[ERR] $line")
+                }.onFailure { t ->
+                    Log.e(LOGCAT_TAG, "stderr handler crashed", t)
+                }
+            }
         )
     }
 
@@ -417,87 +469,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         streamState: ProbeStreamState
     ) {
         appendLogText("\n$line")
+        val event = tryParseProbeEventFromStdoutLine(line)
+        if (event != null) {
+            handleProbeEvent(event, assets, streamState)
+            return
+        }
+
+        // Keep status text responsive during transition periods before native event emission.
         if (line.contains(INTERCARRIER_MARKER)) {
             val parsedDeltaMs = parseDeltaMs(line)
             if (parsedDeltaMs != null) {
-                markProbeCycleBoundary(streamState.deduper)
                 intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
-                onDeltaObserved(streamState, parsedDeltaMs)
             }
         }
+    }
 
-        val parsed = tryParseCellFromStdoutLine(line, streamState.accumulator) ?: return
-        if (!shouldAcceptParsedCell(parsed, streamState.deduper)) {
-            return
+    private fun handleProbeEvent(
+        event: ProbeEventFromNative,
+        assets: ProbeAssets,
+        streamState: ProbeStreamState
+    ) {
+        if (streamState.committedCallIds.size >= 4096) {
+            streamState.committedCallIds.clear()
         }
+        if (!streamState.committedCallIds.add(event.callId)) return
+
+        val parsed = event.parsedCell
+        val deltaMs = event.deltaMs
         probeParsedCell = true
         applyParsedCell(parsed)
         rememberRecentTower(parsed)
-        queuePendingProbe(streamState, assets, parsed)
-    }
-
-    private fun onDeltaObserved(
-        streamState: ProbeStreamState,
-        deltaMs: Long
-    ) {
-        val nowMillis = System.currentTimeMillis()
-        val pendingAssets = streamState.pendingAssets
-        val pendingParsed = streamState.pendingParsed
-        if (pendingAssets != null && pendingParsed != null) {
-            val pendingAge = nowMillis - streamState.pendingParsedAtMillis
-            val pendingIsFresh = pendingAge >= 0 && pendingAge <= DELTA_MATCH_WINDOW_MILLIS
-            if (pendingIsFresh) {
-                flushPendingProbe(streamState, pendingAssets, pendingParsed, deltaMs)
-                return
-            }
-
-            // Drop stale pending parse so it cannot steal a future delta.
-            streamState.pendingAssets = null
-            streamState.pendingParsed = null
-            streamState.pendingParsedAtMillis = 0
-        }
-
-        streamState.cachedDeltaMs = deltaMs
-        streamState.cachedDeltaAtMillis = nowMillis
-    }
-
-    private fun queuePendingProbe(
-        streamState: ProbeStreamState,
-        assets: ProbeAssets,
-        parsed: ParsedCellFromLog
-    ) {
-        val nowMillis = System.currentTimeMillis()
-        val cachedDelta = streamState.cachedDeltaMs
-        val cachedDeltaFresh = cachedDelta != null &&
-            nowMillis - streamState.cachedDeltaAtMillis <= DELTA_MATCH_WINDOW_MILLIS
-        if (cachedDeltaFresh) {
-            streamState.cachedDeltaMs = null
-            streamState.cachedDeltaAtMillis = 0
-            flushPendingProbe(streamState, assets, parsed, cachedDelta)
-            return
-        }
-
-        if (cachedDelta != null) {
-            streamState.cachedDeltaMs = null
-            streamState.cachedDeltaAtMillis = 0
-        }
-        streamState.pendingAssets = assets
-        streamState.pendingParsed = parsed
-        streamState.pendingParsedAtMillis = nowMillis
-    }
-
-    private fun flushPendingProbe(
-        streamState: ProbeStreamState,
-        assets: ProbeAssets,
-        parsed: ParsedCellFromLog,
-        deltaMs: Long
-    ) {
-        streamState.pendingAssets = null
-        streamState.pendingParsed = null
-        streamState.pendingParsedAtMillis = 0
+        intercarrierStatus = buildProbeIntercarrierStatus(deltaMs)
 
         viewModelScope.launch {
-            lookupLocationForParsedCell(assets, parsed, deltaMs)
+            runCatching {
+                lookupLocationForParsedCell(assets, parsed, deltaMs)
+            }.onFailure { t ->
+                Log.e(LOGCAT_TAG, "lookupLocationForParsedCell crashed", t)
+                appendLogText("\n[ERR] lookup exception: ${t.message ?: t}")
+            }
         }
     }
 
@@ -703,6 +713,15 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             ?.toLongOrNull()
     }
 
+    private fun computeAutoRestartBackoffMs(retryCount: Int): Long {
+        val exponent = (retryCount - 1).coerceAtLeast(0)
+        var delayMs = AUTO_RESTART_BASE_BACKOFF_MS
+        repeat(exponent) {
+            delayMs = (delayMs * 2).coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
+        }
+        return delayMs.coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
+    }
+
     private fun applyParsedCell(parsed: ParsedCellFromLog) {
         applyParsedCell(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid)
     }
@@ -812,7 +831,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             if (boundedLine.isNotBlank()) {
                 forwardedLogcatLineCount += 1
                 val mustForward = boundedLine.contains(INTERCARRIER_MARKER) ||
-                    boundedLine.contains("100: Trying") ||
+                    boundedLine.contains(TRYING_MARKER) ||
                     boundedLine.contains("500: Timeout") ||
                     boundedLine.contains("183: Session Progress") ||
                     boundedLine.contains("[ERR]")

