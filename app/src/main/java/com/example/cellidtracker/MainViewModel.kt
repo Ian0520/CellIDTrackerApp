@@ -41,16 +41,18 @@ import kotlinx.coroutines.withContext
 private const val INTERCARRIER_MARKER = "[intercarrier]"
 private const val TRYING_MARKER = "100: Trying"
 private const val INTERCARRIER_PENDING = "Inter-carrier: pending"
-private const val INTERCARRIER_UNKNOWN = "Inter-carrier: unknown"
+private const val INTERCARRIER_UNKNOWN = "Inter-carrier: run Inter-carrier test to measure"
 private const val LOGCAT_TAG = "CellIDTracker"
 private const val MAX_LOG_LINES = 600
 private const val MAX_LOG_LINE_CHARS = 800
-private const val LOG_PREVIEW_LINES = 8
+private const val LOG_PREVIEW_LINES = 20
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
 private const val AUTO_RESTART_MAX_RETRIES = 3
 private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
 private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
+private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
+private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
@@ -118,7 +120,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     private var userStopRequested by mutableStateOf(false)
-    private var probeParsedCell by mutableStateOf(false)
     private var activeExperimentSessionDbId: Long? = null
     private var forwardedLogcatLineCount = 0
 
@@ -335,6 +336,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         isIntercarrierRunning = true
         resetProbeRunState()
+        intercarrierStatus = INTERCARRIER_PENDING
 
         viewModelScope.launch {
             try {
@@ -382,7 +384,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        logPreview = logLines.takeLast(LOG_PREVIEW_LINES).joinToString("\n")
+        val sipSummaryLines = logLines.filter(::isSipStatusSummaryLine).takeLast(LOG_PREVIEW_LINES)
+        logPreview = if (sipSummaryLines.isNotEmpty()) {
+            sipSummaryLines.joinToString("\n")
+        } else {
+            "No SIP status messages yet."
+        }
         if (showLog) {
             output = logLines.joinToString("\n")
         }
@@ -435,14 +442,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun resetProbeRunState() {
         userStopRequested = false
-        probeParsedCell = false
     }
 
     private suspend fun prepareProbeRun(title: String): PreparedProbeRun {
         val assets = loadProbeAssets()
         val command = buildProbeCommand(assets)
         replaceLogText(buildRunHeader(title, command))
-        intercarrierStatus = INTERCARRIER_PENDING
         return PreparedProbeRun(assets = assets, command = command)
     }
 
@@ -474,14 +479,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             handleProbeEvent(event, assets, streamState)
             return
         }
-
-        // Keep status text responsive during transition periods before native event emission.
-        if (line.contains(INTERCARRIER_MARKER)) {
-            val parsedDeltaMs = parseDeltaMs(line)
-            if (parsedDeltaMs != null) {
-                intercarrierStatus = buildProbeIntercarrierStatus(parsedDeltaMs)
-            }
-        }
     }
 
     private fun handleProbeEvent(
@@ -496,10 +493,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val parsed = event.parsedCell
         val deltaMs = event.deltaMs
-        probeParsedCell = true
         applyParsedCell(parsed)
         rememberRecentTower(parsed)
-        intercarrierStatus = buildProbeIntercarrierStatus(deltaMs)
 
         viewModelScope.launch {
             runCatching {
@@ -679,15 +674,6 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         )
     }
 
-    private fun buildProbeIntercarrierStatus(deltaMs: Long?): String {
-        return when {
-            deltaMs == null -> INTERCARRIER_UNKNOWN
-            deltaMs <= 600 -> "Inter-carrier: Yes (delta=${deltaMs} ms) — This target is Inter-Carrier. Cannot probe."
-            probeParsedCell -> "Inter-carrier: No (delta=${deltaMs} ms)"
-            else -> "Inter-carrier: No (delta=${deltaMs} ms) — This target is not inter-carrier, but cannot be probed now. Try later."
-        }
-    }
-
     private fun buildIntercarrierTestStatus(deltaMs: Long?): String {
         return when {
             deltaMs == null -> INTERCARRIER_UNKNOWN
@@ -847,6 +833,11 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         logLines.clear()
         appendLogText(text)
     }
+}
+
+private fun isSipStatusSummaryLine(rawLine: String): Boolean {
+    val normalized = rawLine.replace(ANSI_COLOR_REGEX, "")
+    return SIP_STATUS_LOG_REGEX.containsMatchIn(normalized)
 }
 
 private fun ParsedCellFromLog.toTowerParams(): CellTowerParams {
