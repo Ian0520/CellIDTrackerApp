@@ -63,6 +63,22 @@ struct State {
 
 enum class SipState { IDLE, INVITE, SPROG, PRACK, RING, CANCEL, BUSY, REQUESTERMINATE, ACK, END };
 enum class SipApp { NULLAPP, DOS, MUTICALL };
+
+inline const char* sipStateToString(SipState state) noexcept {
+  switch (state) {
+    case SipState::IDLE: return "IDLE";
+    case SipState::INVITE: return "INVITE";
+    case SipState::SPROG: return "SPROG";
+    case SipState::PRACK: return "PRACK";
+    case SipState::RING: return "RING";
+    case SipState::CANCEL: return "CANCEL";
+    case SipState::BUSY: return "BUSY";
+    case SipState::REQUESTERMINATE: return "REQUESTERMINATE";
+    case SipState::ACK: return "ACK";
+    case SipState::END: return "END";
+  }
+  return "UNKNOWN";
+}
 class Application;
 class Session {
 friend class Application;
@@ -90,6 +106,7 @@ private:
 
   uint32_t pseudoIpv4(uint8_t proto, uint16_t len);
   uint32_t pseudoIpv6(uint8_t proto, uint32_t len);
+  void setSipState(SipState next, const char* reason);
 
   int sock;
   int mtu;

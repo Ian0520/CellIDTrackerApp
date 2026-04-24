@@ -131,6 +131,19 @@ Session::~Session() {
   close(sock);
 }
 
+void Session::setSipState(SipState next, const char* reason) {
+  if (currentSipState == next) return;
+  if (util::context.verbose) {
+    std::cout << "[fsm] " << sipStateToString(currentSipState)
+              << " -> " << sipStateToString(next);
+    if (reason != nullptr && reason[0] != '\0') {
+      std::cout << " reason=" << reason;
+    }
+    std::cout << std::endl;
+  }
+  currentSipState = next;
+}
+
 void Session::run(ESPConfig&& cfg, Application& application) {
   config = std::move(cfg);
   state.afFamily = config.local.find('.') == std::string::npos ? AF_INET6 : AF_INET;
@@ -459,9 +472,9 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
 
   if (status == 183) {
     // Session progress
-    if (currentSipState == SipState::INVITE) currentSipState = SipState::SPROG;
+    if (currentSipState == SipState::INVITE) setSipState(SipState::SPROG, "183 provisional");
     if (currentSipState == SipState::PRACK && currentSipApp == SipApp::DOS) {
-      currentSipState = SipState::SPROG; // FET: 2 SPRGO -> RING, TWM: RING
+      setSipState(SipState::SPROG, "183 after PRACK in DOS"); // FET: 2 SPRGO -> RING, TWM: RING
     }
     
     if (std::regex_search(fullbody, match, toTag)) {
@@ -497,7 +510,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       }
     }
     // cancel immediately for stealth probing
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "183 received, send CANCEL");
   }
   else if (status == 180) {
     // Ringing
@@ -517,41 +530,41 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
         std::cout << "[intercarrier] delta_ms=unknown (no INVITE timestamp)" << std::endl;
       }
     }
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "180 ringing, send CANCEL");
     state.calleeDoSAttackable[state.calleeId] = true;
   }
   else if (status == 181) {
     // Call Being Forwarded
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "181 forwarded, send CANCEL");
     state.calleeDoSAttackable[state.calleeId] = false;
   }
   else if (status == 200 && currentSipState == SipState::PRACK) {
     // OK (PRACK)
-    currentSipState = SipState::CANCEL;
+    setSipState(SipState::CANCEL, "200 after PRACK");
     if (currentSipApp == SipApp::MUTICALL && currentSipState == SipState::REQUESTERMINATE) {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "multicall terminate acknowledged");
     }
   }
   else if (status == 200 && state.retryInvitePending) {
     // CANCEL completed for timeout/busy retry path; proceed to fresh INVITE stage.
-    currentSipState = SipState::BUSY;
+    setSipState(SipState::BUSY, "200 after CANCEL during retry");
   }
   else if (status == 486 || status == 500 || status == 408) {
     // Busy
-    currentSipState = SipState::BUSY;
+    setSipState(SipState::BUSY, "busy/timeout response");
     state.retryImmediate = true;
   }
   else if (status == 401 || status == 407) {
     // Unauthorized / Proxy Authentication Required.
     // In DoS probing mode we don't complete SIP auth here, so force a retry cycle.
     if (state.retryInvitePending) {
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "auth response while retry pending");
     }
     else if (currentSipApp == SipApp::DOS) {
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "auth response in DOS");
       state.retryImmediate = true;
     } else {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "auth response outside DOS");
     }
   }
   else if (status == 481) {
@@ -559,25 +572,25 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     // For DoS probing, this should continue probing instead of ending the app flow.
     if (state.retryInvitePending) {
       // We were waiting for old leg termination before sending fresh INVITE.
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "481 while retry pending");
     }
     else if (currentSipApp == SipApp::DOS) {
       // Treat as retryable failure, same class as timeout/busy.
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "481 in DOS");
       state.retryImmediate = true;
     } else {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "481 outside DOS");
     }
   }
   else if (status == 487 ) {
     // 487: Request Terminated
     if (state.retryInvitePending) {
-      currentSipState = SipState::BUSY;
+      setSipState(SipState::BUSY, "487 while retry pending");
     }
     else if (currentSipApp == SipApp::DOS)  {
-      currentSipState = SipState::SPROG;
+      setSipState(SipState::SPROG, "487 in DOS");
     } else {
-      currentSipState = SipState::ACK;
+      setSipState(SipState::ACK, "487 outside DOS");
     }
   }
 

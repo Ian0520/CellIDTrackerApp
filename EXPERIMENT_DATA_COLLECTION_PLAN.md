@@ -79,22 +79,18 @@ The ground-truth app must **not**:
 The offline analysis program must:
 - load the probe session file
 - load the truth session file
-- verify that the session IDs match
 - match each probe sample to truth data by timestamp
 - compute experiment metrics
 - output a report or table for later inspection
 
 ## Session Model
 
-Both apps must share a common `sessionId`.
-
-The `sessionId` must be:
-- globally unique
-- stable for the entire session
+Each app has its own `sessionId` generated at session start:
+- timestamp format `yyyyMMdd_HHmmss_SSS`
+- stable for the entire local session
 - stored in every exported file
 
-Recommended format:
-- UUID string
+Cross-app merge uses timestamp alignment (`recordedAtMillis`) rather than matching session IDs.
 
 Both exported files must also include:
 - `schemaVersion`
@@ -151,6 +147,8 @@ Each truth sample must include:
 - optional altitude / bearing if easy to collect
 - `movementClass`
 - optional `movementSource` (`auto` / `manual`) if operator override is supported
+- serving-cell snapshot fields (`servingCellObservedKey`, `servingCellStableKey`, RAT/MCC/MNC/area/id/PCI when available)
+- serving-cell transition labels (`servingCellChangeConfirmed`, `servingCellChangeSeq`, `millisSinceServingCellChange`)
 
 Recommended file name:
 - `truth_session_<sessionId>.json`
@@ -177,6 +175,20 @@ Recommended speed thresholds (m/s), tunable later:
 If speed is unavailable for a sample:
 - set `speedMps = null`
 - set `movementClass = unknown`
+
+### Ground-Truth Serving-Cell Change Labels (Updated 2026-04-24)
+
+Implemented in `LocationData` app:
+- capture registered serving-cell snapshot per ground-truth sample (same cadence as location sampling)
+- maintain debounced serving-cell tracker (2 consecutive samples on a new observed key)
+- emit per-sample labels:
+  - `servingCellChangeConfirmed` (true only at confirmed transition sample)
+  - `servingCellChangeSeq` (monotonic transition counter)
+  - `millisSinceServingCellChange`
+
+These labels are intended for probe-side merge:
+- for each probe sample timestamp, identify most recent prior confirmed serving-cell change
+- mark the first probe after each confirmed serving-cell change in offline analysis
 
 ## Matching Rules For Offline Analysis
 

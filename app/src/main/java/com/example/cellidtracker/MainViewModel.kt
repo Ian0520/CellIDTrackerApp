@@ -48,6 +48,9 @@ private const val MAX_LOG_LINE_CHARS = 800
 private const val LOG_PREVIEW_LINES = 8
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
+private const val AUTO_RESTART_MAX_RETRIES = 3
+private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
+private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
@@ -251,6 +254,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startProbe() {
+        if (isRootRunning || isIntercarrierRunning) {
+            showSnackbar("Probe already running")
+            return
+        }
+
         isRootRunning = true
         resetProbeRunState()
 
@@ -258,12 +266,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
-                val streamState = ProbeStreamState()
-                val exitCode = runProbeStreaming(prepared.command) { line ->
-                    handleProbeStdoutLine(line, prepared.assets, streamState)
+                var retryCount = 0
+
+                while (isRootRunning) {
+                    val streamState = ProbeStreamState()
+                    val exitCode = try {
+                        runProbeStreaming(prepared.command) { line ->
+                            runCatching {
+                                handleProbeStdoutLine(line, prepared.assets, streamState)
+                            }.onFailure { t ->
+                                Log.e(LOGCAT_TAG, "Probe stdout handler crashed", t)
+                                appendLogText("\n[ERR] stdout handler exception: ${t.message ?: t}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        appendLogText("\n[Auto-restart] probe runner exception: ${e.message ?: e}")
+                        -999
+                    }
+
+                    appendProcessDone(exitCode)
+
+                    val unexpectedExit = !userStopRequested && exitCode != 0
+                    if (!unexpectedExit) {
+                        if (!userStopRequested) {
+                            showSnackbar("Probe finished (exit $exitCode)")
+                        }
+                        break
+                    }
+
+                    if (retryCount >= AUTO_RESTART_MAX_RETRIES) {
+                        appendLogText(
+                            "\n[Auto-restart] max retries reached ($AUTO_RESTART_MAX_RETRIES). Stop restarting."
+                        )
+                        showSnackbar(
+                            "Probe exited unexpectedly (exit $exitCode). Auto-restart stopped after $AUTO_RESTART_MAX_RETRIES retries."
+                        )
+                        break
+                    }
+
+                    retryCount += 1
+                    val backoffMs = computeAutoRestartBackoffMs(retryCount)
+                    appendLogText(
+                        "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
+                    )
+                    delay(backoffMs)
+                    if (userStopRequested || !isRootRunning) break
+                    appendLogText("\n[Auto-restart] restarting probe now...")
                 }
-                appendProcessDone(exitCode)
-                showSnackbar("Probe finished (exit $exitCode)")
             } catch (e: Exception) {
                 replaceLogText("Probe failed: ${e.message ?: e}")
                 showSnackbar("Probe failed: ${e.message ?: e}")
@@ -292,7 +341,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 startProbeForegroundService(mode = "inter-carrier")
                 val prepared = prepareProbeRun("Running inter-carrier test (root)...")
                 val exitCode = runProbeStreaming(prepared.command) { line ->
-                    handleIntercarrierStdoutLine(line)
+                    runCatching {
+                        handleIntercarrierStdoutLine(line)
+                    }.onFailure { t ->
+                        Log.e(LOGCAT_TAG, "Intercarrier stdout handler crashed", t)
+                        appendLogText("\n[ERR] intercarrier stdout handler exception: ${t.message ?: t}")
+                    }
                 }
                 appendProcessDone(exitCode)
                 showSnackbar("Inter-carrier test finished (exit $exitCode)")
@@ -399,7 +453,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RootShell.runAsRootStreaming(
             command = command,
             onStdoutLine = onStdoutLine,
-            onStderrLine = { line -> appendLogText("\n[ERR] $line") }
+            onStderrLine = { line ->
+                runCatching {
+                    appendLogText("\n[ERR] $line")
+                }.onFailure { t ->
+                    Log.e(LOGCAT_TAG, "stderr handler crashed", t)
+                }
+            }
         )
     }
 
@@ -442,7 +502,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         intercarrierStatus = buildProbeIntercarrierStatus(deltaMs)
 
         viewModelScope.launch {
-            lookupLocationForParsedCell(assets, parsed, deltaMs)
+            runCatching {
+                lookupLocationForParsedCell(assets, parsed, deltaMs)
+            }.onFailure { t ->
+                Log.e(LOGCAT_TAG, "lookupLocationForParsedCell crashed", t)
+                appendLogText("\n[ERR] lookup exception: ${t.message ?: t}")
+            }
         }
     }
 
@@ -646,6 +711,15 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             ?.groupValues
             ?.getOrNull(1)
             ?.toLongOrNull()
+    }
+
+    private fun computeAutoRestartBackoffMs(retryCount: Int): Long {
+        val exponent = (retryCount - 1).coerceAtLeast(0)
+        var delayMs = AUTO_RESTART_BASE_BACKOFF_MS
+        repeat(exponent) {
+            delayMs = (delayMs * 2).coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
+        }
+        return delayMs.coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
     }
 
     private fun applyParsedCell(parsed: ParsedCellFromLog) {
