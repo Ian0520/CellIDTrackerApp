@@ -125,10 +125,11 @@ fun CellMapView(
                     (mode == CellMapMode.RecentProbes || mode == CellMapMode.Mix) &&
                     recentProbePoints.isNotEmpty()
                 ) {
-                    val overlays = createRecentProbeCircles(view, recentProbePoints).toMutableList()
-                    if (mode == CellMapMode.Mix && displayAccuracy != null && displayAccuracy > 0) {
-                        overlays.add(createAccuracyCircle(view, point, displayAccuracy))
-                    }
+                    val overlays = createRecentProbeCircles(
+                        mapView = view,
+                        points = recentProbePoints,
+                        accuracyScale = if (mode == CellMapMode.Mix) 0.7 else 1.0
+                    )
                     view.overlays.addAll(overlays)
                     accuracyOverlays = overlays
                     view.invalidate()
@@ -161,12 +162,13 @@ fun CellMapView(
 
 private fun createRecentProbeCircles(
     mapView: MapView,
-    points: List<CellMapProbePoint>
+    points: List<CellMapProbePoint>,
+    accuracyScale: Double
 ): List<Polygon> {
     return points
         .sortedBy { it.timestampMillis }
         .mapIndexed { index, item ->
-            val itemAccuracy = item.accuracy?.takeIf { it > 0 } ?: 25.0
+            val itemAccuracy = (item.accuracy?.takeIf { it > 0 } ?: 25.0) * accuracyScale
             val ratio = if (points.size <= 1) {
                 1f
             } else {
