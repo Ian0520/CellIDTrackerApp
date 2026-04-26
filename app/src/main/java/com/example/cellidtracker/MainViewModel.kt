@@ -183,9 +183,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: return emptyList()
         val minTimestamp = nowMillis - RECENT_MAP_WINDOW_MS
         return historyByVictim[selectedVictim].orEmpty()
-            .asSequence()
             .filter { it.timestampMillis >= minTimestamp }
-            .mapNotNull { item ->
+            .groupBy { cellIdentityKey(it) }
+            .values
+            .mapNotNull { entries ->
+                val item = entries.maxByOrNull { it.timestampMillis } ?: return@mapNotNull null
                 val itemLat = item.lat ?: return@mapNotNull null
                 val itemLon = item.lon ?: return@mapNotNull null
                 CellMapProbePoint(
@@ -904,6 +906,10 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 private fun isSipStatusSummaryLine(rawLine: String): Boolean {
     val normalized = rawLine.replace(ANSI_COLOR_REGEX, "")
     return SIP_STATUS_LOG_REGEX.containsMatchIn(normalized)
+}
+
+private fun cellIdentityKey(item: ProbeHistory): String {
+    return "${item.mcc}:${item.mnc}:${item.lac}:${item.cid}"
 }
 
 private fun ParsedCellFromLog.toTowerParams(): CellTowerParams {
