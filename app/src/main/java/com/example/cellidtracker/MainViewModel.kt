@@ -51,6 +51,7 @@ private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
 private const val AUTO_RESTART_MAX_RETRIES = 3
 private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
 private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
+private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
@@ -97,6 +98,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var isIntercarrierRunning by mutableStateOf(false)
         private set
     var cellLocation by mutableStateOf<CellLocationResult?>(null)
+        private set
+    var cellMapMode by mutableStateOf(CellMapMode.Origin)
         private set
     var intercarrierStatus by mutableStateOf(INTERCARRIER_UNKNOWN)
         private set
@@ -146,6 +149,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         logDirty.set(true)
     }
 
+    fun onCellMapModeChange(mode: CellMapMode) {
+        cellMapMode = mode
+    }
+
     fun selectHistoryVictim(victim: String) {
         selectedHistoryVictim = victim
         victimInput = victim
@@ -160,6 +167,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         applyParsedCell(item.mcc, item.mnc, item.lac, item.cid)
         _events.tryEmit(MainUiEvent.OpenProbeMap)
+    }
+
+    fun recentProbeMapPoints(nowMillis: Long = System.currentTimeMillis()): List<CellMapProbePoint> {
+        val selectedVictim = selectedHistoryVictim
+            ?: victimInput.trim().takeIf { it.isNotEmpty() }
+            ?: historyByVictim.keys.firstOrNull()
+            ?: return emptyList()
+        val minTimestamp = nowMillis - RECENT_MAP_WINDOW_MS
+        return historyByVictim[selectedVictim].orEmpty()
+            .asSequence()
+            .filter { it.timestampMillis >= minTimestamp }
+            .mapNotNull { item ->
+                val itemLat = item.lat ?: return@mapNotNull null
+                val itemLon = item.lon ?: return@mapNotNull null
+                CellMapProbePoint(
+                    lat = itemLat,
+                    lon = itemLon,
+                    accuracy = item.accuracy,
+                    timestampMillis = item.timestampMillis
+                )
+            }
+            .sortedBy { it.timestampMillis }
+            .toList()
     }
 
     fun clearCurrentVictimHistory() {

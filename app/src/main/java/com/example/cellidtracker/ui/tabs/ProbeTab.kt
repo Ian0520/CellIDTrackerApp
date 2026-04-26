@@ -14,6 +14,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -24,6 +25,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.ScrollState
 import com.example.cellidtracker.CellLocationResult
+import com.example.cellidtracker.CellMapMode
+import com.example.cellidtracker.CellMapProbePoint
 import com.example.cellidtracker.CellMapView
 import com.example.cellidtracker.ui.components.SmallInfoChip
 import java.time.Instant
@@ -48,6 +51,9 @@ fun ProbeTabContent(
     lacInput: String,
     cidInput: String,
     cellLocation: CellLocationResult?,
+    cellMapMode: CellMapMode,
+    recentProbePoints: List<CellMapProbePoint>,
+    onCellMapModeChange: (CellMapMode) -> Unit,
     intercarrierStatus: String,
     onStartProbe: () -> Unit,
     onStopProbe: () -> Unit,
@@ -282,8 +288,23 @@ fun ProbeTabContent(
                     CellMapView(
                         lat = loc?.lat,
                         lon = loc?.lon,
-                        accuracy = loc?.range
+                        accuracy = loc?.range,
+                        mode = cellMapMode,
+                        recentProbePoints = recentProbePoints
                     )
+                }
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CellMapMode.values().forEachIndexed { index, mode ->
+                        FilterChip(
+                            selected = mode == cellMapMode,
+                            onClick = { onCellMapModeChange(mode) },
+                            label = { Text("$index ${mode.label}") }
+                        )
+                    }
                 }
             }
         }
