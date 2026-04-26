@@ -174,8 +174,18 @@ private fun createRecentProbeCircles(
             }
             Polygon(mapView).apply {
                 this.points = Polygon.pointsAsCircle(GeoPoint(item.lat, item.lon), itemAccuracy)
-                fillPaint.color = Color.argb((20 + ratio * 75).toInt(), 0, 150, 255)
-                outlinePaint.color = Color.argb((65 + ratio * 130).toInt(), 0, 90, 230)
+                fillPaint.color = interpolateColor(
+                    ratio = ratio,
+                    alpha = 45,
+                    oldRgb = Triple(120, 190, 255),
+                    newRgb = Triple(255, 135, 135)
+                )
+                outlinePaint.color = interpolateColor(
+                    ratio = ratio,
+                    alpha = 105,
+                    oldRgb = Triple(70, 150, 235),
+                    newRgb = Triple(235, 95, 95)
+                )
                 outlinePaint.strokeWidth = 2f
             }
         }
@@ -198,6 +208,22 @@ private fun recentSignature(points: List<CellMapProbePoint>): String {
     return points.joinToString("|") {
         "${it.timestampMillis}:${it.lat}:${it.lon}:${it.accuracy}"
     }
+}
+
+private fun interpolateColor(
+    ratio: Float,
+    alpha: Int,
+    oldRgb: Triple<Int, Int, Int>,
+    newRgb: Triple<Int, Int, Int>
+): Int {
+    val clamped = ratio.coerceIn(0f, 1f)
+    fun channel(old: Int, new: Int): Int = (old + (new - old) * clamped).toInt()
+    return Color.argb(
+        alpha,
+        channel(oldRgb.first, newRgb.first),
+        channel(oldRgb.second, newRgb.second),
+        channel(oldRgb.third, newRgb.third)
+    )
 }
 
 /**
