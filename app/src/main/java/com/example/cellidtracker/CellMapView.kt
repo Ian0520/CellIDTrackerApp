@@ -21,7 +21,8 @@ import org.osmdroid.views.overlay.Polygon
 enum class CellMapMode(val label: String) {
     Origin("origin"),
     AccuracyScaled("accuracy x0.7"),
-    RecentProbes("recent 3 min")
+    RecentProbes("recent 3 min"),
+    Mix("mix")
 }
 
 data class CellMapProbePoint(
@@ -99,6 +100,7 @@ fun CellMapView(
                 val displayAccuracy = when (mode) {
                     CellMapMode.Origin,
                     CellMapMode.RecentProbes -> effectiveAccuracy
+                    CellMapMode.Mix,
                     CellMapMode.AccuracyScaled -> effectiveAccuracy?.times(0.7)
                 }
                 // 調整縮放，確保精度圈可以落在可視範圍內
@@ -119,23 +121,14 @@ fun CellMapView(
                     view.overlays.remove(existing)
                 }
                 accuracyOverlays = emptyList()
-                if (mode == CellMapMode.RecentProbes && recentProbePoints.isNotEmpty()) {
-                    val overlays = recentProbePoints
-                        .sortedBy { it.timestampMillis }
-                        .mapIndexed { index, item ->
-                            val itemAccuracy = item.accuracy?.takeIf { it > 0 } ?: 25.0
-                            val ratio = if (recentProbePoints.size <= 1) {
-                                1f
-                            } else {
-                                index.toFloat() / (recentProbePoints.size - 1).toFloat()
-                            }
-                            Polygon(view).apply {
-                                points = Polygon.pointsAsCircle(GeoPoint(item.lat, item.lon), itemAccuracy)
-                                fillPaint.color = Color.argb((20 + ratio * 75).toInt(), 0, 150, 255)
-                                outlinePaint.color = Color.argb((65 + ratio * 130).toInt(), 0, 90, 230)
-                                outlinePaint.strokeWidth = 2f
-                            }
-                        }
+                if (
+                    (mode == CellMapMode.RecentProbes || mode == CellMapMode.Mix) &&
+                    recentProbePoints.isNotEmpty()
+                ) {
+                    val overlays = createRecentProbeCircles(view, recentProbePoints).toMutableList()
+                    if (mode == CellMapMode.Mix && displayAccuracy != null && displayAccuracy > 0) {
+                        overlays.add(createAccuracyCircle(view, point, displayAccuracy))
+                    }
                     view.overlays.addAll(overlays)
                     accuracyOverlays = overlays
                     view.invalidate()
@@ -164,6 +157,28 @@ fun CellMapView(
             }
         }
     )
+}
+
+private fun createRecentProbeCircles(
+    mapView: MapView,
+    points: List<CellMapProbePoint>
+): List<Polygon> {
+    return points
+        .sortedBy { it.timestampMillis }
+        .mapIndexed { index, item ->
+            val itemAccuracy = item.accuracy?.takeIf { it > 0 } ?: 25.0
+            val ratio = if (points.size <= 1) {
+                1f
+            } else {
+                index.toFloat() / (points.size - 1).toFloat()
+            }
+            Polygon(mapView).apply {
+                this.points = Polygon.pointsAsCircle(GeoPoint(item.lat, item.lon), itemAccuracy)
+                fillPaint.color = Color.argb((20 + ratio * 75).toInt(), 0, 150, 255)
+                outlinePaint.color = Color.argb((65 + ratio * 130).toInt(), 0, 90, 230)
+                outlinePaint.strokeWidth = 2f
+            }
+        }
 }
 
 private fun createAccuracyCircle(

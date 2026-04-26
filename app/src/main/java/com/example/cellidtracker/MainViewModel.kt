@@ -1,6 +1,11 @@
 package com.example.cellidtracker
 
 import android.app.Application
+import android.content.Context
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -52,6 +57,8 @@ private const val AUTO_RESTART_MAX_RETRIES = 3
 private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
 private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
 private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
+private const val PROBE_START_VIBRATION_MS = 80L
+private const val PROBE_END_VIBRATION_MS = 140L
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
@@ -292,6 +299,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         isRootRunning = true
         resetProbeRunState()
+        vibrate(PROBE_START_VIBRATION_MS)
 
         viewModelScope.launch {
             try {
@@ -350,6 +358,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 isRootRunning = false
                 stopProbeForegroundServiceIfIdle()
+                vibrate(PROBE_END_VIBRATION_MS)
             }
         }
     }
@@ -831,6 +840,33 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 
     private fun showSnackbar(message: String) {
         _events.tryEmit(MainUiEvent.ShowSnackbar(message))
+    }
+
+    private fun vibrate(durationMillis: Long) {
+        runCatching {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val manager = appContext.getSystemService(VibratorManager::class.java)
+                manager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            } ?: return
+
+            if (!vibrator.hasVibrator()) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(
+                    VibrationEffect.createOneShot(
+                        durationMillis,
+                        VibrationEffect.DEFAULT_AMPLITUDE
+                    )
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(durationMillis)
+            }
+        }.onFailure { e ->
+            Log.w(LOGCAT_TAG, "Vibration failed: ${e.message}", e)
+        }
     }
 
     private fun appendLogText(text: String) {
