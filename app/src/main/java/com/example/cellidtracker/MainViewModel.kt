@@ -679,6 +679,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val towersJson = encodeTowers(payloadUsed)
         val movingSnapshot = isMoving
         val activeSessionSnapshot = activeExperimentSessionDbId
+        val activeProbeRunIdSnapshot = activeProbeRun?.dbId
         val entry = ProbeHistory(
             mcc = parsed.mcc,
             mnc = parsed.mnc,
@@ -692,7 +693,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             towersCount = payloadUsed.size,
             towersJson = towersJson,
             moving = movingSnapshot,
-            deltaMs = deltaMs
+            deltaMs = deltaMs,
+            probeRunId = activeProbeRunIdSnapshot
         )
 
         val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
@@ -1031,6 +1033,11 @@ private fun cellIdentityKey(item: ProbeHistory): String {
     return "${item.mcc}:${item.mnc}:${item.lac}:${item.cid}"
 }
 
+private fun runAwareCellIdentityKey(item: ProbeHistory): String {
+    val runKey = item.probeRunId?.toString() ?: "legacy:${item.timestampMillis}"
+    return "$runKey:${cellIdentityKey(item)}"
+}
+
 private fun latestHistoryPerCell(items: List<ProbeHistory>): List<ProbeHistory> {
     return items
         .groupBy(::cellIdentityKey)
@@ -1040,7 +1047,7 @@ private fun latestHistoryPerCell(items: List<ProbeHistory>): List<ProbeHistory> 
 
 private fun dedupeHistoryByContinuousCellWindow(items: List<ProbeHistory>): List<ProbeHistory> {
     return items
-        .groupBy(::cellIdentityKey)
+        .groupBy(::runAwareCellIdentityKey)
         .values
         .flatMap { entries ->
             val sorted = entries.sortedBy { it.timestampMillis }

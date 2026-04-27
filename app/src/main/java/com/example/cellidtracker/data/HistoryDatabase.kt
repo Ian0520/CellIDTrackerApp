@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ExperimentSampleEntity::class,
         ProbeRunEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class HistoryDatabase : RoomDatabase() {
@@ -41,7 +41,8 @@ abstract class HistoryDatabase : RoomDatabase() {
                         MIGRATION_4_5,
                         MIGRATION_5_6,
                         MIGRATION_6_7,
-                        MIGRATION_7_8
+                        MIGRATION_7_8,
+                        MIGRATION_8_9
                     )
                     .build().also { INSTANCE = it }
             }
@@ -217,6 +218,15 @@ abstract class HistoryDatabase : RoomDatabase() {
                 )
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_probe_runs_endedAtMillis` ON `probe_runs` (`endedAtMillis`)"
+                )
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE probe_history ADD COLUMN probeRunId INTEGER")
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_history_probeRunId` ON `probe_history` (`probeRunId`)"
                 )
             }
         }
