@@ -30,6 +30,12 @@ import com.example.cellidtracker.CellMapProbePoint
 import com.example.cellidtracker.CellMapView
 import com.example.cellidtracker.ui.components.SmallInfoChip
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+
+private val MAP_PROBE_TIME_FORMATTER: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'GMT+8'")
+        .withZone(ZoneOffset.ofHours(8))
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -304,6 +310,30 @@ fun ProbeTabContent(
                             onClick = { onCellMapModeChange(mode) },
                             label = { Text("$index ${mode.label}") }
                         )
+                    }
+                }
+                if (cellMapMode == CellMapMode.AllHistory) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Used probes", style = MaterialTheme.typography.labelLarge)
+                        if (recentProbePoints.isEmpty()) {
+                            Text(
+                                "No mappable probe history.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            recentProbePoints.sortedBy { it.timestampMillis }.forEach { point ->
+                                Text(
+                                    buildString {
+                                        append(MAP_PROBE_TIME_FORMATTER.format(Instant.ofEpochMilli(point.timestampMillis)))
+                                        append(" · lat=${point.lat}, lon=${point.lon}")
+                                        append(" · accuracy=${point.accuracy?.let { "${it * 0.7} m" } ?: "N/A"}")
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             }
