@@ -927,17 +927,19 @@ private fun dedupeHistoryByContinuousCellWindow(items: List<ProbeHistory>): List
             if (sorted.isEmpty()) return@flatMap emptyList()
 
             val retained = mutableListOf<ProbeHistory>()
-            var latestInSegment = sorted.first()
+            var firstInSegment = sorted.first()
+            var previousInSegment = sorted.first()
             sorted.drop(1).forEach { item ->
-                val gapMillis = item.timestampMillis - latestInSegment.timestampMillis
+                val gapMillis = item.timestampMillis - previousInSegment.timestampMillis
                 if (gapMillis <= CELL_HISTORY_DEDUPE_WINDOW_MS) {
-                    latestInSegment = item
+                    previousInSegment = item
                 } else {
-                    retained.add(latestInSegment)
-                    latestInSegment = item
+                    retained.add(firstInSegment)
+                    firstInSegment = item
+                    previousInSegment = item
                 }
             }
-            retained.add(latestInSegment)
+            retained.add(firstInSegment)
             retained
         }
 }
