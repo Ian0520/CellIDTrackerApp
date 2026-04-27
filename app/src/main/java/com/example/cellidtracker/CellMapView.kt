@@ -22,7 +22,8 @@ enum class CellMapMode(val label: String) {
     Origin("origin"),
     AccuracyScaled("accuracy x0.7"),
     RecentProbes("recent 3 min"),
-    Mix("mix")
+    Mix("mix"),
+    AllHistory("all history")
 }
 
 data class CellMapProbePoint(
@@ -99,7 +100,8 @@ fun CellMapView(
                 val point = GeoPoint(effectiveLat, effectiveLon)
                 val displayAccuracy = when (mode) {
                     CellMapMode.Origin,
-                    CellMapMode.RecentProbes -> effectiveAccuracy
+                    CellMapMode.RecentProbes,
+                    CellMapMode.AllHistory -> effectiveAccuracy
                     CellMapMode.Mix,
                     CellMapMode.AccuracyScaled -> effectiveAccuracy?.times(0.7)
                 }
@@ -122,13 +124,22 @@ fun CellMapView(
                 }
                 accuracyOverlays = emptyList()
                 if (
-                    (mode == CellMapMode.RecentProbes || mode == CellMapMode.Mix) &&
+                    (mode == CellMapMode.RecentProbes ||
+                        mode == CellMapMode.Mix ||
+                        mode == CellMapMode.AllHistory) &&
                     recentProbePoints.isNotEmpty()
                 ) {
                     val overlays = createRecentProbeCircles(
                         mapView = view,
                         points = recentProbePoints,
-                        accuracyScale = if (mode == CellMapMode.Mix) 0.7 else 1.0
+                        accuracyScale = if (
+                            mode == CellMapMode.Mix ||
+                            mode == CellMapMode.AllHistory
+                        ) {
+                            0.7
+                        } else {
+                            1.0
+                        }
                     )
                     view.overlays.addAll(overlays)
                     accuracyOverlays = overlays

@@ -57,6 +57,7 @@ private const val AUTO_RESTART_MAX_RETRIES = 3
 private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
 private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
 private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
+private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
@@ -176,27 +177,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _events.tryEmit(MainUiEvent.OpenProbeMap)
     }
 
-    fun recentProbeMapPoints(nowMillis: Long = System.currentTimeMillis()): List<CellMapProbePoint> {
+    fun mapProbePoints(nowMillis: Long = System.currentTimeMillis()): List<CellMapProbePoint> {
         val selectedVictim = selectedHistoryVictim
             ?: victimInput.trim().takeIf { it.isNotEmpty() }
             ?: historyByVictim.keys.firstOrNull()
             ?: return emptyList()
-        val minTimestamp = nowMillis - RECENT_MAP_WINDOW_MS
-        return historyByVictim[selectedVictim].orEmpty()
-            .filter { it.timestampMillis >= minTimestamp }
-            .groupBy { cellIdentityKey(it) }
-            .values
-            .mapNotNull { entries ->
-                val item = entries.maxByOrNull { it.timestampMillis } ?: return@mapNotNull null
-                val itemLat = item.lat ?: return@mapNotNull null
-                val itemLon = item.lon ?: return@mapNotNull null
-                CellMapProbePoint(
-                    lat = itemLat,
-                    lon = itemLon,
-                    accuracy = item.accuracy,
-                    timestampMillis = item.timestampMillis
-                )
+        val history = historyByVictim[selectedVictim].orEmpty()
+        val mappableHistory = history.filter { it.lat != null && it.lon != null }
+        val candidates = when (cellMapMode) {
+            CellMapMode.AllHistory -> dedupeHistoryByContinuousCellWindow(mappableHistory)
+            CellMapMode.RecentProbes,
+            CellMapMode.Mix -> {
+                val minTimestamp = nowMillis - RECENT_MAP_WINDOW_MS
+                latestHistoryPerCell(mappableHistory.filter { it.timestampMillis >= minTimestamp })
             }
+            CellMapMode.Origin,
+            CellMapMode.AccuracyScaled -> emptyList()
+        }
+        return candidates
+            .mapNotNull(::toCellMapProbePoint)
             .sortedBy { it.timestampMillis }
             .toList()
     }
@@ -910,6 +909,48 @@ private fun isSipStatusSummaryLine(rawLine: String): Boolean {
 
 private fun cellIdentityKey(item: ProbeHistory): String {
     return "${item.mcc}:${item.mnc}:${item.lac}:${item.cid}"
+}
+
+private fun latestHistoryPerCell(items: List<ProbeHistory>): List<ProbeHistory> {
+    return items
+        .groupBy(::cellIdentityKey)
+        .values
+        .mapNotNull { entries -> entries.maxByOrNull { it.timestampMillis } }
+}
+
+private fun dedupeHistoryByContinuousCellWindow(items: List<ProbeHistory>): List<ProbeHistory> {
+    return items
+        .groupBy(::cellIdentityKey)
+        .values
+        .flatMap { entries ->
+            val sorted = entries.sortedBy { it.timestampMillis }
+            if (sorted.isEmpty()) return@flatMap emptyList()
+
+            val retained = mutableListOf<ProbeHistory>()
+            var latestInSegment = sorted.first()
+            sorted.drop(1).forEach { item ->
+                val gapMillis = item.timestampMillis - latestInSegment.timestampMillis
+                if (gapMillis <= CELL_HISTORY_DEDUPE_WINDOW_MS) {
+                    latestInSegment = item
+                } else {
+                    retained.add(latestInSegment)
+                    latestInSegment = item
+                }
+            }
+            retained.add(latestInSegment)
+            retained
+        }
+}
+
+private fun toCellMapProbePoint(item: ProbeHistory): CellMapProbePoint? {
+    val itemLat = item.lat ?: return null
+    val itemLon = item.lon ?: return null
+    return CellMapProbePoint(
+        lat = itemLat,
+        lon = itemLon,
+        accuracy = item.accuracy,
+        timestampMillis = item.timestampMillis
+    )
 }
 
 private fun ParsedCellFromLog.toTowerParams(): CellTowerParams {

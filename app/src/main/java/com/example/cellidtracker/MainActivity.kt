@@ -124,7 +124,7 @@ class MainActivity : ComponentActivity() {
                                 cidInput = viewModel.cidInput,
                                 cellLocation = viewModel.cellLocation,
                                 cellMapMode = viewModel.cellMapMode,
-                                recentProbePoints = viewModel.recentProbeMapPoints(),
+                                recentProbePoints = viewModel.mapProbePoints(),
                                 onCellMapModeChange = viewModel::onCellMapModeChange,
                                 intercarrierStatus = viewModel.intercarrierStatus,
                                 onStartProbe = viewModel::startProbe,
