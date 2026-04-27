@@ -772,6 +772,8 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   std::thread inviteThread;
   bool expobackoff;
   constexpr auto kTerminateWatchdog = std::chrono::seconds(10);
+  constexpr auto kInviteWatchdog = std::chrono::seconds(20);
+  constexpr auto kProvisionalWatchdog = std::chrono::seconds(20);
   auto watchedState = session.currentSipState;
   auto watchedStateAt = std::chrono::steady_clock::now();
 
@@ -783,30 +785,52 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   };
 
   auto applyTerminateWatchdog = [&]() {
-    if (session.currentSipState != SipState::CANCEL &&
-        session.currentSipState != SipState::REQUESTERMINATE) {
-      return;
-    }
-
     const auto elapsed = std::chrono::steady_clock::now() - watchedStateAt;
-    if (elapsed < kTerminateWatchdog) return;
 
-    if (session.currentSipState == SipState::CANCEL) {
+    if (session.currentSipState == SipState::INVITE && elapsed >= kInviteWatchdog) {
       if (util::context.verbose) {
-        std::cout << "[watchdog] CANCEL stuck >10s, forcing retry path" << std::endl;
-      }
-      session.state.retryCancelPending = true;
-      session.state.retryInvitePending = false;
-      session.setSipState(SipState::BUSY, "watchdog: cancel stuck");
-    } else {
-      if (util::context.verbose) {
-        std::cout << "[watchdog] REQUESTERMINATE stuck >10s, forcing fresh INVITE" << std::endl;
+        std::cout << "[watchdog] INVITE stuck >20s, forcing fresh INVITE" << std::endl;
       }
       session.state.retryCancelPending = false;
       session.state.retryInvitePending = true;
-      session.setSipState(SipState::BUSY, "watchdog: request terminate stuck");
+      session.setSipState(SipState::BUSY, "watchdog: invite stuck");
+      noteStateTransition();
+      return;
     }
-    noteStateTransition();
+
+    if ((session.currentSipState == SipState::SPROG ||
+         session.currentSipState == SipState::PRACK) &&
+        elapsed >= kProvisionalWatchdog) {
+      if (util::context.verbose) {
+        std::cout << "[watchdog] provisional flow stuck >20s, forcing cancel retry path" << std::endl;
+      }
+      session.state.retryCancelPending = true;
+      session.state.retryInvitePending = false;
+      session.setSipState(SipState::BUSY, "watchdog: provisional stuck");
+      noteStateTransition();
+      return;
+    }
+
+    if ((session.currentSipState == SipState::CANCEL ||
+         session.currentSipState == SipState::REQUESTERMINATE) &&
+        elapsed >= kTerminateWatchdog) {
+      if (session.currentSipState == SipState::CANCEL) {
+        if (util::context.verbose) {
+          std::cout << "[watchdog] CANCEL stuck >10s, forcing retry path" << std::endl;
+        }
+        session.state.retryCancelPending = true;
+        session.state.retryInvitePending = false;
+        session.setSipState(SipState::BUSY, "watchdog: cancel stuck");
+      } else {
+        if (util::context.verbose) {
+          std::cout << "[watchdog] REQUESTERMINATE stuck >10s, forcing fresh INVITE" << std::endl;
+        }
+        session.state.retryCancelPending = false;
+        session.state.retryInvitePending = true;
+        session.setSipState(SipState::BUSY, "watchdog: request terminate stuck");
+      }
+      noteStateTransition();
+    }
   };
 
   while (true) {

@@ -37,6 +37,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -61,6 +62,8 @@ private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
 private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
+private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
+private const val PROBE_WATCHDOG_POLL_MS = 5_000L
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
@@ -369,8 +372,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 while (isRootRunning) {
                     startProbeRun(prepared.assets, mode = "probe")
                     val streamState = ProbeStreamState()
+                    val lastStdoutAtMillis = AtomicLong(System.currentTimeMillis())
+                    val watchdogJob = launch {
+                        while (isRootRunning && !userStopRequested) {
+                            delay(PROBE_WATCHDOG_POLL_MS)
+                            val idleMillis = System.currentTimeMillis() - lastStdoutAtMillis.get()
+                            if (idleMillis >= PROBE_STDOUT_IDLE_RESTART_MS) {
+                                appendLogText(
+                                    "\n[watchdog] no probe stdout for ${idleMillis}ms; restarting native probe..."
+                                )
+                                RootShell.requestStop()
+                                break
+                            }
+                        }
+                    }
                     val exitCode = try {
                         runProbeStreaming(prepared.command) { line ->
+                            lastStdoutAtMillis.set(System.currentTimeMillis())
                             runCatching {
                                 handleProbeStdoutLine(line, prepared.assets, streamState)
                             }.onFailure { t ->
@@ -381,6 +399,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } catch (e: Exception) {
                         appendLogText("\n[Auto-restart] probe runner exception: ${e.message ?: e}")
                         -999
+                    } finally {
+                        watchdogJob.cancel()
+                        watchdogJob.join()
                     }
 
                     appendProcessDone(exitCode)
