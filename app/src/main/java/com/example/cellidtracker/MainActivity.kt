@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
                                 cellLocation = viewModel.cellLocation,
                                 cellMapMode = viewModel.cellMapMode,
                                 recentProbePoints = viewModel.mapProbePoints(),
+                                allHistoryTimelineItems = viewModel.allHistoryTimelineItems(),
                                 onCellMapModeChange = viewModel::onCellMapModeChange,
                                 intercarrierStatus = viewModel.intercarrierStatus,
                                 onStartProbe = viewModel::startProbe,

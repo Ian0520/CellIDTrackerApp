@@ -27,6 +27,8 @@ import androidx.compose.foundation.ScrollState
 import com.example.cellidtracker.CellLocationResult
 import com.example.cellidtracker.CellMapMode
 import com.example.cellidtracker.CellMapProbePoint
+import com.example.cellidtracker.CellMapTimelineItem
+import com.example.cellidtracker.CellMapTimelineItemType
 import com.example.cellidtracker.CellMapView
 import com.example.cellidtracker.ui.components.SmallInfoChip
 import java.time.Instant
@@ -59,6 +61,7 @@ fun ProbeTabContent(
     cellLocation: CellLocationResult?,
     cellMapMode: CellMapMode,
     recentProbePoints: List<CellMapProbePoint>,
+    allHistoryTimelineItems: List<CellMapTimelineItem>,
     onCellMapModeChange: (CellMapMode) -> Unit,
     intercarrierStatus: String,
     onStartProbe: () -> Unit,
@@ -314,21 +317,17 @@ fun ProbeTabContent(
                 }
                 if (cellMapMode == CellMapMode.AllHistory) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Used probes", style = MaterialTheme.typography.labelLarge)
-                        if (recentProbePoints.isEmpty()) {
+                        Text("Probe timeline", style = MaterialTheme.typography.labelLarge)
+                        if (allHistoryTimelineItems.isEmpty()) {
                             Text(
                                 "No mappable probe history.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
-                            recentProbePoints.sortedBy { it.timestampMillis }.forEach { point ->
+                            allHistoryTimelineItems.forEach { item ->
                                 Text(
-                                    buildString {
-                                        append(MAP_PROBE_TIME_FORMATTER.format(Instant.ofEpochMilli(point.timestampMillis)))
-                                        append(" · lat=${point.lat}, lon=${point.lon}")
-                                        append(" · accuracy=${point.accuracy?.let { "${it * 0.7} m" } ?: "N/A"}")
-                                    },
+                                    formatTimelineItem(item),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -337,6 +336,23 @@ fun ProbeTabContent(
                     }
                 }
             }
+        }
+    }
+}
+
+private fun formatTimelineItem(item: CellMapTimelineItem): String {
+    val time = MAP_PROBE_TIME_FORMATTER.format(Instant.ofEpochMilli(item.timestampMillis))
+    return when (item.type) {
+        CellMapTimelineItemType.ProbeStart -> "$time · Probe start"
+        CellMapTimelineItemType.ProbeStop -> buildString {
+            append("$time · Probe stop")
+            item.exitCode?.let { append(" · exit=$it") }
+            if (item.stoppedByUser == true) append(" · user stopped")
+        }
+        CellMapTimelineItemType.ProbePoint -> buildString {
+            append(time)
+            append(" · lat=${item.lat}, lon=${item.lon}")
+            append(" · accuracy=${item.accuracy?.let { "$it m" } ?: "N/A"}")
         }
     }
 }

@@ -12,14 +12,16 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         ProbeHistoryEntity::class,
         ExperimentSessionEntity::class,
-        ExperimentSampleEntity::class
+        ExperimentSampleEntity::class,
+        ProbeRunEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class HistoryDatabase : RoomDatabase() {
     abstract fun historyDao(): ProbeHistoryDao
     abstract fun experimentDao(): ExperimentDao
+    abstract fun probeRunDao(): ProbeRunDao
 
     companion object {
         @Volatile
@@ -38,7 +40,8 @@ abstract class HistoryDatabase : RoomDatabase() {
                         MIGRATION_3_4,
                         MIGRATION_4_5,
                         MIGRATION_5_6,
-                        MIGRATION_6_7
+                        MIGRATION_6_7,
+                        MIGRATION_7_8
                     )
                     .build().also { INSTANCE = it }
             }
@@ -186,6 +189,34 @@ abstract class HistoryDatabase : RoomDatabase() {
                 )
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_experiment_samples_recordedAtMillis` ON `experiment_samples` (`recordedAtMillis`)"
+                )
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `probe_runs` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `victim` TEXT NOT NULL,
+                        `mode` TEXT NOT NULL,
+                        `startedAtMillis` INTEGER NOT NULL,
+                        `endedAtMillis` INTEGER,
+                        `exitCode` INTEGER,
+                        `stoppedByUser` INTEGER NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_runs_victim` ON `probe_runs` (`victim`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_runs_startedAtMillis` ON `probe_runs` (`startedAtMillis`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_runs_endedAtMillis` ON `probe_runs` (`endedAtMillis`)"
                 )
             }
         }

@@ -18,6 +18,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
+import com.example.cellidtracker.data.ProbeRunEntity
 import com.example.cellidtracker.experiment.exportExperimentSessionToFile
 import com.example.cellidtracker.history.ProbeHistory
 import com.example.cellidtracker.history.encodeTowers
@@ -79,6 +80,12 @@ private data class VictimUpdateResult(
     val snackbarMessage: String
 )
 
+private data class ActiveProbeRun(
+    val dbId: Long,
+    val victim: String,
+    val startedAtMillis: Long
+)
+
 private class ProbeStreamState {
     val committedCallIds = hashSetOf<String>()
 }
@@ -94,6 +101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val events = _events.asSharedFlow()
     val historyByVictim = mutableStateMapOf<String, SnapshotStateList<ProbeHistory>>()
+    val probeRunsByVictim = mutableStateMapOf<String, SnapshotStateList<ProbeRunEntity>>()
 
     var victimInput by mutableStateOf("")
         private set
@@ -132,6 +140,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var userStopRequested by mutableStateOf(false)
     private var activeExperimentSessionDbId: Long? = null
+    private var activeProbeRun: ActiveProbeRun? = null
     private var forwardedLogcatLineCount = 0
 
     init {
@@ -139,6 +148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         startLogBufferFlushLoop()
         viewModelScope.launch {
             loadHistory()
+            loadProbeRuns()
             loadActiveExperimentSession()
         }
     }
@@ -200,12 +210,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .toList()
     }
 
+    fun allHistoryTimelineItems(): List<CellMapTimelineItem> {
+        val selectedVictim = selectedHistoryVictim
+            ?: victimInput.trim().takeIf { it.isNotEmpty() }
+            ?: historyByVictim.keys.firstOrNull()
+            ?: return emptyList()
+        val pointItems = mapProbePoints().map { point ->
+            CellMapTimelineItem(
+                type = CellMapTimelineItemType.ProbePoint,
+                timestampMillis = point.timestampMillis,
+                lat = point.lat,
+                lon = point.lon,
+                accuracy = point.accuracy?.times(0.7)
+            )
+        }
+        val runItems = probeRunsByVictim[selectedVictim].orEmpty().flatMap { run ->
+            buildList {
+                add(
+                    CellMapTimelineItem(
+                        type = CellMapTimelineItemType.ProbeStart,
+                        timestampMillis = run.startedAtMillis
+                    )
+                )
+                run.endedAtMillis?.let { endedAt ->
+                    add(
+                        CellMapTimelineItem(
+                            type = CellMapTimelineItemType.ProbeStop,
+                            timestampMillis = endedAt,
+                            exitCode = run.exitCode,
+                            stoppedByUser = run.stoppedByUser
+                        )
+                    )
+                }
+            }
+        }
+        return (runItems + pointItems).sortedWith(
+            compareBy<CellMapTimelineItem> { it.timestampMillis }
+                .thenBy { timelineTypeOrder(it.type) }
+        )
+    }
+
     fun clearCurrentVictimHistory() {
         val key = selectedHistoryVictim ?: return
         viewModelScope.launch(Dispatchers.IO) {
             db.historyDao().clearForVictim(key)
+            db.probeRunDao().clearForVictim(key)
         }
         historyByVictim.remove(key)
+        probeRunsByVictim.remove(key)
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
     }
 
@@ -303,9 +355,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         vibrate(PROBE_START_VIBRATION_MS)
 
         viewModelScope.launch {
+            var lastExitCode: Int? = null
             try {
                 startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
+                startProbeRun(prepared.assets, mode = "probe")
                 var retryCount = 0
 
                 while (isRootRunning) {
@@ -325,6 +379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     appendProcessDone(exitCode)
+                    lastExitCode = exitCode
 
                     val unexpectedExit = !userStopRequested && exitCode != 0
                     if (!unexpectedExit) {
@@ -357,6 +412,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 replaceLogText("Probe failed: ${e.message ?: e}")
                 showSnackbar("Probe failed: ${e.message ?: e}")
             } finally {
+                endProbeRun(lastExitCode)
                 isRootRunning = false
                 stopProbeForegroundServiceIfIdle()
                 vibrate(PROBE_END_VIBRATION_MS)
@@ -684,6 +740,56 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         RootShell.runAsRoot(command)
     }
 
+    private suspend fun startProbeRun(assets: ProbeAssets, mode: String) {
+        val victimKey = currentVictimFromList(assets.workDir)
+            .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
+        val now = System.currentTimeMillis()
+        val run = ProbeRunEntity(
+            victim = victimKey,
+            mode = mode,
+            startedAtMillis = now,
+            endedAtMillis = null,
+            exitCode = null,
+            stoppedByUser = false,
+            createdAtMillis = now
+        )
+        val runId = withContext(Dispatchers.IO) {
+            db.probeRunDao().insert(run)
+        }
+        val savedRun = run.copy(id = runId)
+        activeProbeRun = ActiveProbeRun(
+            dbId = runId,
+            victim = victimKey,
+            startedAtMillis = now
+        )
+        val list = probeRunsByVictim.getOrPut(victimKey) { mutableStateListOf() }
+        list.add(savedRun)
+    }
+
+    private suspend fun endProbeRun(exitCode: Int?) {
+        val run = activeProbeRun ?: return
+        activeProbeRun = null
+        val endedAtMillis = System.currentTimeMillis()
+        val stoppedByUserSnapshot = userStopRequested
+        withContext(Dispatchers.IO) {
+            db.probeRunDao().endRun(
+                id = run.dbId,
+                endedAtMillis = endedAtMillis,
+                exitCode = exitCode,
+                stoppedByUser = stoppedByUserSnapshot
+            )
+        }
+        val list = probeRunsByVictim[run.victim] ?: return
+        val index = list.indexOfFirst { it.id == run.dbId }
+        if (index >= 0) {
+            list[index] = list[index].copy(
+                endedAtMillis = endedAtMillis,
+                exitCode = exitCode,
+                stoppedByUser = stoppedByUserSnapshot
+            )
+        }
+    }
+
     private fun buildProbeCommand(assets: ProbeAssets): String {
         return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
     }
@@ -792,6 +898,20 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             historyByVictim[victim] = mutableStateListOf<ProbeHistory>().apply { addAll(list) }
         }
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+    }
+
+    private suspend fun loadProbeRuns() {
+        val dao = db.probeRunDao()
+        val loaded = withContext(Dispatchers.IO) {
+            dao.getVictims().associateWith { victim ->
+                dao.getRunsForVictim(victim)
+            }
+        }
+
+        probeRunsByVictim.clear()
+        loaded.forEach { (victim, list) ->
+            probeRunsByVictim[victim] = mutableStateListOf<ProbeRunEntity>().apply { addAll(list) }
+        }
     }
 
     private fun generateTimestampSessionId(nowMillis: Long): String {
@@ -953,6 +1073,14 @@ private fun toCellMapProbePoint(item: ProbeHistory): CellMapProbePoint? {
         accuracy = item.accuracy,
         timestampMillis = item.timestampMillis
     )
+}
+
+private fun timelineTypeOrder(type: CellMapTimelineItemType): Int {
+    return when (type) {
+        CellMapTimelineItemType.ProbeStart -> 0
+        CellMapTimelineItemType.ProbePoint -> 1
+        CellMapTimelineItemType.ProbeStop -> 2
+    }
 }
 
 private fun ParsedCellFromLog.toTowerParams(): CellTowerParams {
