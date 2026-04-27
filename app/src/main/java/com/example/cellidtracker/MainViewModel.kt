@@ -123,6 +123,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var isMoving by mutableStateOf(false)
         private set
+    var autoRestartProbe by mutableStateOf(true)
+        private set
     var selectedHistoryVictim by mutableStateOf<String?>(null)
         private set
     var mccInput by mutableStateOf("")
@@ -159,6 +161,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onMovingChange(value: Boolean) {
         isMoving = value
+    }
+
+    fun onAutoRestartProbeChange(value: Boolean) {
+        autoRestartProbe = value
     }
 
     fun toggleShowLog() {
@@ -355,14 +361,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         vibrate(PROBE_START_VIBRATION_MS)
 
         viewModelScope.launch {
-            var lastExitCode: Int? = null
             try {
                 startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
-                startProbeRun(prepared.assets, mode = "probe")
                 var retryCount = 0
 
                 while (isRootRunning) {
+                    startProbeRun(prepared.assets, mode = "probe")
                     val streamState = ProbeStreamState()
                     val exitCode = try {
                         runProbeStreaming(prepared.command) { line ->
@@ -379,17 +384,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     appendProcessDone(exitCode)
-                    lastExitCode = exitCode
+                    endProbeRun(exitCode)
 
-                    val unexpectedExit = !userStopRequested && exitCode != 0
-                    if (!unexpectedExit) {
+                    if (userStopRequested) {
+                        break
+                    }
+
+                    if (!autoRestartProbe && exitCode == 0) {
                         if (!userStopRequested) {
                             showSnackbar("Probe finished (exit $exitCode)")
                         }
                         break
                     }
 
-                    if (retryCount >= AUTO_RESTART_MAX_RETRIES) {
+                    if (!autoRestartProbe && retryCount >= AUTO_RESTART_MAX_RETRIES) {
                         appendLogText(
                             "\n[Auto-restart] max retries reached ($AUTO_RESTART_MAX_RETRIES). Stop restarting."
                         )
@@ -401,9 +409,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     retryCount += 1
                     val backoffMs = computeAutoRestartBackoffMs(retryCount)
-                    appendLogText(
-                        "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
-                    )
+                    if (autoRestartProbe) {
+                        appendLogText(
+                            "\n[Auto-restart] probe exited (exit $exitCode). Restart in ${backoffMs}ms."
+                        )
+                    } else {
+                        appendLogText(
+                            "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
+                        )
+                    }
                     delay(backoffMs)
                     if (userStopRequested || !isRootRunning) break
                     appendLogText("\n[Auto-restart] restarting probe now...")
@@ -412,7 +426,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 replaceLogText("Probe failed: ${e.message ?: e}")
                 showSnackbar("Probe failed: ${e.message ?: e}")
             } finally {
-                endProbeRun(lastExitCode)
+                endProbeRun(null)
                 isRootRunning = false
                 stopProbeForegroundServiceIfIdle()
                 vibrate(PROBE_END_VIBRATION_MS)
@@ -848,7 +862,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private fun computeAutoRestartBackoffMs(retryCount: Int): Long {
-        val exponent = (retryCount - 1).coerceAtLeast(0)
+        val exponent = (retryCount - 1).coerceIn(0, 4)
         var delayMs = AUTO_RESTART_BASE_BACKOFF_MS
         repeat(exponent) {
             delayMs = (delayMs * 2).coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)

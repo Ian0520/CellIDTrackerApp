@@ -51,6 +51,8 @@ fun ProbeTabContent(
     onVictimInputChange: (String) -> Unit,
     isMoving: Boolean,
     onMovingChange: (Boolean) -> Unit,
+    autoRestartProbe: Boolean,
+    onAutoRestartProbeChange: (Boolean) -> Unit,
     onSetVictimNumber: () -> Unit,
     isRootRunning: Boolean,
     isIntercarrierRunning: Boolean,
@@ -217,6 +219,14 @@ fun ProbeTabContent(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Auto restart probe", style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = autoRestartProbe, onCheckedChange = onAutoRestartProbeChange)
                 }
 
                 Row(
