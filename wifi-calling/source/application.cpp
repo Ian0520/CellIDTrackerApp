@@ -771,6 +771,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   std::vector<double> probeIntervals;
   std::thread inviteThread;
   bool expobackoff;
+  constexpr auto kMinFreshInviteInterval = std::chrono::seconds(30);
   constexpr auto kTerminateWatchdog = std::chrono::seconds(10);
   constexpr auto kInviteWatchdog = std::chrono::seconds(20);
   constexpr auto kProvisionalWatchdog = std::chrono::seconds(20);
@@ -831,6 +832,17 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
       }
       noteStateTransition();
     }
+  };
+
+  auto freshInviteDelayRemaining = [&]() {
+    if (!session.state.t_invite.has_value()) {
+      return std::chrono::steady_clock::duration::zero();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - *session.state.t_invite;
+    if (elapsed >= kMinFreshInviteInterval) {
+      return std::chrono::steady_clock::duration::zero();
+    }
+    return kMinFreshInviteInterval - elapsed;
   };
 
   while (true) {
@@ -907,6 +919,15 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
           }
 
           if (session.state.retryInvitePending) {
+            const auto waitRemaining = freshInviteDelayRemaining();
+            if (waitRemaining > std::chrono::steady_clock::duration::zero()) {
+              if (util::context.verbose) {
+                const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(waitRemaining).count();
+                std::cout << "[rate-limit] fresh INVITE delayed " << waitMs
+                          << "ms to avoid rapid retry/forwarding loop" << std::endl;
+              }
+              break;
+            }
             if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
             prepareFreshInvite(back);
             armInviteTiming(back.invite);
