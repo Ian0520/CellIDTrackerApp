@@ -498,7 +498,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       state.firstProvisionalStatus = 183;
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
-        std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+        std::cout << "[intercarrier] status=183 delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -527,7 +527,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
       state.firstProvisionalStatus = 180;
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
-        std::cout << "[intercarrier] delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+        std::cout << "[intercarrier] status=180 delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();

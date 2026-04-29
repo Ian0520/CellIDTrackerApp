@@ -27,9 +27,11 @@ import com.example.cellidtracker.history.toDomain
 import com.example.cellidtracker.history.toEntity
 import com.example.cellidtracker.probe.ProbeEventFromNative
 import com.example.cellidtracker.probe.ParsedCellFromLog
+import com.example.cellidtracker.probe.ProbeDeltaEventFromNative
 import com.example.cellidtracker.probe.ProbeAssets
 import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
+import com.example.cellidtracker.probe.tryParseProbeDeltaEventFromStdoutLine
 import com.example.cellidtracker.probe.tryParseProbeEventFromStdoutLine
 import java.io.File
 import java.io.IOException
@@ -93,6 +95,7 @@ private data class ActiveProbeRun(
 
 private class ProbeStreamState {
     val committedCallIds = hashSetOf<String>()
+    val committedDeltaKeys = hashSetOf<String>()
     val lastProbeEventAtMillis = AtomicLong(System.currentTimeMillis())
 }
 
@@ -487,7 +490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val prepared = prepareProbeRun("Running inter-carrier test (root)...")
                 val exitCode = runProbeStreaming(prepared.command) { line ->
                     runCatching {
-                        handleIntercarrierStdoutLine(line)
+                        handleIntercarrierStdoutLine(line, prepared.assets)
                     }.onFailure { t ->
                         Log.e(LOGCAT_TAG, "Intercarrier stdout handler crashed", t)
                         appendLogText("\n[ERR] intercarrier stdout handler exception: ${t.message ?: t}")
@@ -617,6 +620,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         streamState: ProbeStreamState
     ) {
         appendLogText("\n$line")
+        val deltaEvent = tryParseProbeDeltaEventFromStdoutLine(line)
+        if (deltaEvent != null) {
+            handleProbeDeltaEvent(deltaEvent, assets, streamState)
+        }
         val event = tryParseProbeEventFromStdoutLine(line)
         if (event != null) {
             handleProbeEvent(event, assets, streamState)
@@ -650,14 +657,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleIntercarrierStdoutLine(line: String) {
+    private fun handleProbeDeltaEvent(
+        event: ProbeDeltaEventFromNative,
+        assets: ProbeAssets,
+        streamState: ProbeStreamState
+    ) {
+        val key = "${event.inviteMs ?: -1}:${event.prMs ?: -1}:${event.deltaMs}:${event.status ?: -1}"
+        if (!streamState.committedDeltaKeys.add(key)) return
+        viewModelScope.launch {
+            runCatching {
+                recordProbeDeltaSample(
+                    assets = assets,
+                    status = event.status,
+                    deltaMs = event.deltaMs,
+                    inviteMs = event.inviteMs,
+                    prMs = event.prMs
+                )
+            }.onFailure { t ->
+                Log.e(LOGCAT_TAG, "recordProbeDeltaSample crashed", t)
+                appendLogText("\n[ERR] delta sample exception: ${t.message ?: t}")
+            }
+        }
+    }
+
+    private fun handleIntercarrierStdoutLine(line: String, assets: ProbeAssets) {
         appendLogText("\n$line")
-        if (!line.contains(INTERCARRIER_MARKER) || userStopRequested) return
-        val deltaMs = parseDeltaMs(line) ?: return
+        val deltaEvent = tryParseProbeDeltaEventFromStdoutLine(line) ?: return
+        viewModelScope.launch {
+            runCatching {
+                recordProbeDeltaSample(
+                    assets = assets,
+                    status = deltaEvent.status,
+                    deltaMs = deltaEvent.deltaMs,
+                    inviteMs = deltaEvent.inviteMs,
+                    prMs = deltaEvent.prMs
+                )
+            }.onFailure { t ->
+                Log.e(LOGCAT_TAG, "recordProbeDeltaSample crashed", t)
+                appendLogText("\n[ERR] delta sample exception: ${t.message ?: t}")
+            }
+        }
+        if (userStopRequested) return
 
         userStopRequested = true
         RootShell.requestStop()
-        intercarrierStatus = buildIntercarrierTestStatus(deltaMs)
+        intercarrierStatus = buildIntercarrierTestStatus(deltaEvent.deltaMs)
     }
 
     private suspend fun lookupLocationForParsedCell(
@@ -773,10 +817,58 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         towersJson = towersJson,
                         moving = movingSnapshot,
                         deltaMs = deltaMs,
+                        sampleType = "cell",
+                        sipStatus = null,
+                        inviteMs = null,
+                        prMs = null,
+                        intercarrierCandidate = deltaMs?.let { isIntercarrierDelta(it) },
                         createdAtMillis = recordedAtMillis
                     )
                 )
             }
+        }
+    }
+
+    private suspend fun recordProbeDeltaSample(
+        assets: ProbeAssets,
+        status: Int?,
+        deltaMs: Long,
+        inviteMs: Long?,
+        prMs: Long?
+    ) {
+        val activeSessionSnapshot = activeExperimentSessionDbId ?: return
+        val victimKey = currentVictimFromList(assets.workDir)
+            .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
+        val recordedAtMillis = System.currentTimeMillis()
+        val movingSnapshot = isMoving
+
+        withContext(Dispatchers.IO) {
+            db.experimentDao().insertSample(
+                ExperimentSampleEntity(
+                    sessionDbId = activeSessionSnapshot,
+                    recordedAtMillis = recordedAtMillis,
+                    victim = victimKey,
+                    mcc = -1,
+                    mnc = -1,
+                    lac = -1,
+                    cid = -1,
+                    estimatedLat = null,
+                    estimatedLon = null,
+                    estimatedAccuracyM = null,
+                    geolocationStatus = "delta_only",
+                    geolocationError = null,
+                    towersCount = 0,
+                    towersJson = "[]",
+                    moving = movingSnapshot,
+                    deltaMs = deltaMs,
+                    sampleType = "delta",
+                    sipStatus = status,
+                    inviteMs = inviteMs,
+                    prMs = prMs,
+                    intercarrierCandidate = isIntercarrierDelta(deltaMs),
+                    createdAtMillis = recordedAtMillis
+                )
+            )
         }
     }
 
@@ -876,10 +968,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     private fun buildIntercarrierTestStatus(deltaMs: Long?): String {
         return when {
             deltaMs == null -> INTERCARRIER_UNKNOWN
-            deltaMs <= 600 -> "Inter-carrier: Yes (delta=${deltaMs} ms) — This target is Inter-Carrier. Cannot probe."
+            isIntercarrierDelta(deltaMs) -> "Inter-carrier: Yes (delta=${deltaMs} ms) — This target is Inter-Carrier. Cannot probe."
             else -> "Inter-carrier: No (delta=${deltaMs} ms)"
         }
     }
+
+    private fun isIntercarrierDelta(deltaMs: Long): Boolean = deltaMs <= 600
 
     private fun buildGeoSuccessLog(location: CellLocationResult): String = buildString {
         appendLine()
@@ -888,14 +982,6 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         if (location.range != null) {
             appendLine("accuracy=${location.range} m")
         }
-    }
-
-    private fun parseDeltaMs(line: String): Long? {
-        return Regex("delta_ms=([0-9]+)")
-            .find(line)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toLongOrNull()
     }
 
     private fun computeAutoRestartBackoffMs(retryCount: Int): Long {

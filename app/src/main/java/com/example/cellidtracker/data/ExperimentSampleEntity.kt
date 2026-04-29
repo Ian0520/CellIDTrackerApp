@@ -3,6 +3,7 @@ package com.example.cellidtracker.data
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
+import androidx.room.ColumnInfo
 import androidx.room.PrimaryKey
 
 @Entity(
@@ -38,5 +39,10 @@ data class ExperimentSampleEntity(
     val towersJson: String,
     val moving: Boolean,
     val deltaMs: Long?,
+    @ColumnInfo(defaultValue = "'cell'") val sampleType: String,
+    val sipStatus: Int?,
+    val inviteMs: Long?,
+    val prMs: Long?,
+    val intercarrierCandidate: Boolean?,
     val createdAtMillis: Long
 )

@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ExperimentSampleEntity::class,
         ProbeRunEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = true
 )
 abstract class HistoryDatabase : RoomDatabase() {
@@ -42,7 +42,8 @@ abstract class HistoryDatabase : RoomDatabase() {
                         MIGRATION_5_6,
                         MIGRATION_6_7,
                         MIGRATION_7_8,
-                        MIGRATION_8_9
+                        MIGRATION_8_9,
+                        MIGRATION_9_10
                     )
                     .build().also { INSTANCE = it }
             }
@@ -116,6 +117,11 @@ abstract class HistoryDatabase : RoomDatabase() {
                         `towersJson` TEXT NOT NULL,
                         `moving` INTEGER NOT NULL,
                         `deltaMs` INTEGER,
+                        `sampleType` TEXT NOT NULL DEFAULT 'cell',
+                        `sipStatus` INTEGER,
+                        `inviteMs` INTEGER,
+                        `prMs` INTEGER,
+                        `intercarrierCandidate` INTEGER,
                         `createdAtMillis` INTEGER NOT NULL,
                         FOREIGN KEY(`sessionDbId`) REFERENCES `experiment_sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
@@ -180,6 +186,11 @@ abstract class HistoryDatabase : RoomDatabase() {
                         `towersJson` TEXT NOT NULL,
                         `moving` INTEGER NOT NULL,
                         `deltaMs` INTEGER,
+                        `sampleType` TEXT NOT NULL DEFAULT 'cell',
+                        `sipStatus` INTEGER,
+                        `inviteMs` INTEGER,
+                        `prMs` INTEGER,
+                        `intercarrierCandidate` INTEGER,
                         `createdAtMillis` INTEGER NOT NULL,
                         FOREIGN KEY(`sessionDbId`) REFERENCES `experiment_sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
@@ -228,6 +239,16 @@ abstract class HistoryDatabase : RoomDatabase() {
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_probe_history_probeRunId` ON `probe_history` (`probeRunId`)"
                 )
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN sampleType TEXT NOT NULL DEFAULT 'cell'")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN sipStatus INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN inviteMs INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN prMs INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN intercarrierCandidate INTEGER")
             }
         }
     }
