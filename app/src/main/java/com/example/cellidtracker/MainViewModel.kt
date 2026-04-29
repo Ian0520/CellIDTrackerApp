@@ -1021,7 +1021,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
         recentTowers.add(0, tower)
         if (recentTowers.size > 5) {
-            recentTowers.removeLast()
+            recentTowers.removeAt(recentTowers.lastIndex)
         }
     }
 
