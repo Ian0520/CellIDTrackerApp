@@ -65,6 +65,7 @@ private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
 private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
+private const val DEFAULT_PROBE_INTERVAL_SECONDS = 30
 private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
 private const val PROBE_RESULT_IDLE_RESTART_MS = 10 * 60_000L
 private const val PROBE_WATCHDOG_POLL_MS = 5_000L
@@ -134,6 +135,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var autoRestartProbe by mutableStateOf(true)
         private set
+    var probeIntervalSeconds by mutableStateOf(DEFAULT_PROBE_INTERVAL_SECONDS)
+        private set
     var selectedHistoryVictim by mutableStateOf<String?>(null)
         private set
     var mccInput by mutableStateOf("")
@@ -174,6 +177,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAutoRestartProbeChange(value: Boolean) {
         autoRestartProbe = value
+    }
+
+    fun onProbeIntervalSecondsChange(value: Int) {
+        probeIntervalSeconds = if (value <= 45) 30 else 60
     }
 
     fun toggleShowLog() {
@@ -936,7 +943,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private fun buildProbeCommand(assets: ProbeAssets): String {
-        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
+        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r -d --verbose 1"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {

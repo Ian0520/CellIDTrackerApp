@@ -117,6 +117,8 @@ class MainActivity : ComponentActivity() {
                                 onMovingChange = viewModel::onMovingChange,
                                 autoRestartProbe = viewModel.autoRestartProbe,
                                 onAutoRestartProbeChange = viewModel::onAutoRestartProbeChange,
+                                probeIntervalSeconds = viewModel.probeIntervalSeconds,
+                                onProbeIntervalSecondsChange = viewModel::onProbeIntervalSecondsChange,
                                 onSetVictimNumber = viewModel::setVictimNumber,
                                 isRootRunning = viewModel.isRootRunning,
                                 isIntercarrierRunning = viewModel.isIntercarrierRunning,

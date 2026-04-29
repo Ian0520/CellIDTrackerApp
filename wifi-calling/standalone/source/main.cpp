@@ -3,6 +3,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cxxopts.hpp>
 #include <iostream>
 #include <span>
@@ -19,6 +20,18 @@
 const std::string epdgInterface = "epdg";
 const std::string wlan0Interface = "wlan0";
 const std::string configFolder = "config";
+
+namespace {
+int readProbeIntervalSeconds() {
+  const char* raw = std::getenv("PROBE_INTERVAL_SECONDS");
+  if (raw == nullptr) return 30;
+  char* end = nullptr;
+  const long parsed = std::strtol(raw, &end, 10);
+  if (end == raw || parsed <= 0) return 30;
+  if (parsed <= 45) return 30;
+  return 60;
+}
+}
 
 
 int main(int argc, char* argv[]) {
@@ -53,6 +66,7 @@ int main(int argc, char* argv[]) {
   util::context.rlRemoteCellIDProber = result["rl-assisted-remote-cellid-prober"].as<bool>();
   util::context.unavailabilityEval = result["unavailability-eval"].as<bool>();
   util::context.detectEval = result["detect-eval"].as<bool>();
+  util::context.probeIntervalSeconds = readProbeIntervalSeconds();
 
   util::context.verbose = result["verbose"].as<int>();
   util::context.calleeId = createVictimList(result["enable-input"].as<bool>());
@@ -65,6 +79,7 @@ int main(int argc, char* argv[]) {
     exit(EXIT_FAILURE);
   }
   std::cout << "Using carrier, " << carrier << std::endl;
+  std::cout << "Probe interval seconds, " << util::context.probeIntervalSeconds << std::endl;
   util::context.configFolder = configFolder + "/" + carrier;
 
 

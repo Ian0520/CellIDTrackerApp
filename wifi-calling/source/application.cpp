@@ -771,7 +771,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   std::vector<double> probeIntervals;
   std::thread inviteThread;
   bool expobackoff;
-  constexpr auto kMinFreshInviteInterval = std::chrono::seconds(30);
+  const auto minFreshInviteInterval = std::chrono::seconds(util::context.probeIntervalSeconds);
   constexpr auto kTerminateWatchdog = std::chrono::seconds(10);
   constexpr auto kInviteWatchdog = std::chrono::seconds(20);
   constexpr auto kProvisionalWatchdog = std::chrono::seconds(20);
@@ -839,10 +839,10 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
       return std::chrono::steady_clock::duration::zero();
     }
     const auto elapsed = std::chrono::steady_clock::now() - *session.state.t_invite;
-    if (elapsed >= kMinFreshInviteInterval) {
+    if (elapsed >= minFreshInviteInterval) {
       return std::chrono::steady_clock::duration::zero();
     }
-    return kMinFreshInviteInterval - elapsed;
+    return minFreshInviteInterval - elapsed;
   };
 
   while (true) {

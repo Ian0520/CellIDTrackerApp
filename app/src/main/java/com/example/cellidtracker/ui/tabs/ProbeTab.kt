@@ -53,6 +53,8 @@ fun ProbeTabContent(
     onMovingChange: (Boolean) -> Unit,
     autoRestartProbe: Boolean,
     onAutoRestartProbeChange: (Boolean) -> Unit,
+    probeIntervalSeconds: Int,
+    onProbeIntervalSecondsChange: (Int) -> Unit,
     onSetVictimNumber: () -> Unit,
     isRootRunning: Boolean,
     isIntercarrierRunning: Boolean,
@@ -227,6 +229,24 @@ fun ProbeTabContent(
                 ) {
                     Text("Auto restart probe", style = MaterialTheme.typography.bodyMedium)
                     Switch(checked = autoRestartProbe, onCheckedChange = onAutoRestartProbeChange)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = probeIntervalSeconds == 30,
+                        onClick = { onProbeIntervalSecondsChange(30) },
+                        enabled = !isRootRunning && !isIntercarrierRunning,
+                        label = { Text("30s") }
+                    )
+                    FilterChip(
+                        selected = probeIntervalSeconds == 60,
+                        onClick = { onProbeIntervalSecondsChange(60) },
+                        enabled = !isRootRunning && !isIntercarrierRunning,
+                        label = { Text("60s") }
+                    )
                 }
 
                 Row(
