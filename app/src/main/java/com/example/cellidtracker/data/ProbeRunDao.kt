@@ -25,6 +25,13 @@ interface ProbeRunDao {
     @Query("SELECT * FROM probe_runs WHERE victim = :victim ORDER BY startedAtMillis ASC, id ASC")
     suspend fun getRunsForVictim(victim: String): List<ProbeRunEntity>
 
+    @Query(
+        "SELECT * FROM (" +
+            "SELECT * FROM probe_runs WHERE victim = :victim ORDER BY startedAtMillis DESC, id DESC LIMIT :limit" +
+            ") ORDER BY startedAtMillis ASC, id ASC"
+    )
+    suspend fun getRecentRunsForVictim(victim: String, limit: Int): List<ProbeRunEntity>
+
     @Query("SELECT DISTINCT victim FROM probe_runs ORDER BY victim ASC")
     suspend fun getVictims(): List<String>
 

@@ -54,6 +54,7 @@ private const val MAX_LOG_LINES = 600
 private const val MAX_LOG_LINE_CHARS = 800
 private const val LOG_PREVIEW_LINES = 20
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
+private const val MAX_IN_MEMORY_RUNS_PER_VICTIM = 200
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
 private const val AUTO_RESTART_MAX_RETRIES = 3
 private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
@@ -63,6 +64,7 @@ private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
 private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
+private const val PROBE_RESULT_IDLE_RESTART_MS = 10 * 60_000L
 private const val PROBE_WATCHDOG_POLL_MS = 5_000L
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
@@ -91,6 +93,7 @@ private data class ActiveProbeRun(
 
 private class ProbeStreamState {
     val committedCallIds = hashSetOf<String>()
+    val lastProbeEventAtMillis = AtomicLong(System.currentTimeMillis())
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -376,10 +379,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val watchdogJob = launch {
                         while (isRootRunning && !userStopRequested) {
                             delay(PROBE_WATCHDOG_POLL_MS)
-                            val idleMillis = System.currentTimeMillis() - lastStdoutAtMillis.get()
+                            val now = System.currentTimeMillis()
+                            val idleMillis = now - lastStdoutAtMillis.get()
                             if (idleMillis >= PROBE_STDOUT_IDLE_RESTART_MS) {
                                 appendLogText(
                                     "\n[watchdog] no probe stdout for ${idleMillis}ms; restarting native probe..."
+                                )
+                                RootShell.requestStop()
+                                break
+                            }
+                            val resultIdleMillis = now - streamState.lastProbeEventAtMillis.get()
+                            if (resultIdleMillis >= PROBE_RESULT_IDLE_RESTART_MS) {
+                                appendLogText(
+                                    "\n[watchdog] no probe result for ${resultIdleMillis}ms; restarting native probe..."
                                 )
                                 RootShell.requestStop()
                                 break
@@ -621,6 +633,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             streamState.committedCallIds.clear()
         }
         if (!streamState.committedCallIds.add(event.callId)) return
+        streamState.lastProbeEventAtMillis.set(System.currentTimeMillis())
 
         val parsed = event.parsedCell
         val deltaMs = event.deltaMs
@@ -801,6 +814,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         )
         val list = probeRunsByVictim.getOrPut(victimKey) { mutableStateListOf() }
         list.add(savedRun)
+        if (list.size > MAX_IN_MEMORY_RUNS_PER_VICTIM) {
+            list.removeRange(0, list.size - MAX_IN_MEMORY_RUNS_PER_VICTIM)
+        }
     }
 
     private suspend fun endProbeRun(exitCode: Int?) {
@@ -926,7 +942,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val dao = db.historyDao()
         val loaded = withContext(Dispatchers.IO) {
             dao.getVictims().associateWith { victim ->
-                dao.getHistoryForVictim(victim).map { it.toDomain() }
+                dao.getRecentHistoryForVictim(victim, MAX_IN_MEMORY_HISTORY_PER_VICTIM).map { it.toDomain() }
             }
         }
 
@@ -941,7 +957,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val dao = db.probeRunDao()
         val loaded = withContext(Dispatchers.IO) {
             dao.getVictims().associateWith { victim ->
-                dao.getRunsForVictim(victim)
+                dao.getRecentRunsForVictim(victim, MAX_IN_MEMORY_RUNS_PER_VICTIM)
             }
         }
 
