@@ -19,7 +19,7 @@ Top-level JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schemaVersion` | int | Currently `1` |
+| `schemaVersion` | int | Currently `2` |
 | `appType` | string | `"probe"` |
 | `appName` | string | App label |
 | `appPackage` | string | Package name |
@@ -48,7 +48,12 @@ Each item in `samples`:
 | `geolocationError` | string or null | Error message when failed |
 | `towersCount` | int | Number of towers sent to geolocation |
 | `towersJson` | string | JSON string (not array type) containing towers |
-| `deltaMs` | long or null | Parsed from native structured probe event (`[probe_event] ... delta_ms=...`) |
+| `deltaMs` | long or null | Parsed from native structured probe event (`[probe_event] ... delta_ms=...`) or delta-only provisional event (`[intercarrier] ... delta_ms=...`) |
+| `sampleType` | string | `"cell"` for geolocation/cell samples, `"delta"` for provisional delta-only samples |
+| `sipStatus` | int or null | SIP provisional status for delta samples, usually `180` or `183`; may be null for older native logs |
+| `inviteMs` | long or null | Native steady-clock timestamp for INVITE send time, from `[intercarrier] invite=...` |
+| `prMs` | long or null | Native steady-clock timestamp for first provisional response, from `[intercarrier] pr=...` |
+| `intercarrierCandidate` | boolean or null | App threshold classification for delta-only analysis; currently `true` when `deltaMs <= 600` |
 | `moving` | boolean | Manual UI toggle snapshot (not GPS-derived) |
 
 `towersJson` string decodes to array of objects:
@@ -74,7 +79,8 @@ Notes:
 ### 1.3 Probe-side semantics important for analysis
 
 - `moving` is operator input from app switch, not measured movement.
-- `deltaMs` may be `null` when no native `[probe_event]` line is available for a probe cycle.
+- `deltaMs` may be `null` for legacy cell samples when no native `[probe_event]` line is available.
+- Delta-only samples use sentinel cell values `mcc=-1, mnc=-1, lac=-1, cid=-1`, `towersCount=0`, `towersJson="[]"`, and `geolocationStatus="delta_only"`.
 - The app uses native `call_id` from `[probe_event]` as the primary dedupe key to prevent duplicate history entries from repeated `183` retransmissions.
 
 ---

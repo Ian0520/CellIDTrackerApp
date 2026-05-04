@@ -14,6 +14,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -24,9 +25,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.ScrollState
 import com.example.cellidtracker.CellLocationResult
+import com.example.cellidtracker.CellMapMode
+import com.example.cellidtracker.CellMapProbePoint
+import com.example.cellidtracker.CellMapTimelineItem
+import com.example.cellidtracker.CellMapTimelineItemType
 import com.example.cellidtracker.CellMapView
 import com.example.cellidtracker.ui.components.SmallInfoChip
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+
+private val MAP_PROBE_TIME_FORMATTER: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'GMT+8'")
+        .withZone(ZoneOffset.ofHours(8))
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -40,6 +51,10 @@ fun ProbeTabContent(
     onVictimInputChange: (String) -> Unit,
     isMoving: Boolean,
     onMovingChange: (Boolean) -> Unit,
+    autoRestartProbe: Boolean,
+    onAutoRestartProbeChange: (Boolean) -> Unit,
+    probeIntervalSeconds: Int,
+    onProbeIntervalSecondsChange: (Int) -> Unit,
     onSetVictimNumber: () -> Unit,
     isRootRunning: Boolean,
     isIntercarrierRunning: Boolean,
@@ -48,6 +63,10 @@ fun ProbeTabContent(
     lacInput: String,
     cidInput: String,
     cellLocation: CellLocationResult?,
+    cellMapMode: CellMapMode,
+    recentProbePoints: List<CellMapProbePoint>,
+    allHistoryTimelineItems: List<CellMapTimelineItem>,
+    onCellMapModeChange: (CellMapMode) -> Unit,
     intercarrierStatus: String,
     onStartProbe: () -> Unit,
     onStopProbe: () -> Unit,
@@ -206,6 +225,32 @@ fun ProbeTabContent(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Auto restart probe", style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = autoRestartProbe, onCheckedChange = onAutoRestartProbeChange)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = probeIntervalSeconds == 30,
+                        onClick = { onProbeIntervalSecondsChange(30) },
+                        enabled = !isRootRunning && !isIntercarrierRunning,
+                        label = { Text("30s") }
+                    )
+                    FilterChip(
+                        selected = probeIntervalSeconds == 60,
+                        onClick = { onProbeIntervalSecondsChange(60) },
+                        enabled = !isRootRunning && !isIntercarrierRunning,
+                        label = { Text("60s") }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
@@ -282,10 +327,62 @@ fun ProbeTabContent(
                     CellMapView(
                         lat = loc?.lat,
                         lon = loc?.lon,
-                        accuracy = loc?.range
+                        accuracy = loc?.range,
+                        mode = cellMapMode,
+                        recentProbePoints = recentProbePoints
                     )
                 }
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CellMapMode.values().forEachIndexed { index, mode ->
+                        FilterChip(
+                            selected = mode == cellMapMode,
+                            onClick = { onCellMapModeChange(mode) },
+                            label = { Text("$index ${mode.label}") }
+                        )
+                    }
+                }
+                if (cellMapMode == CellMapMode.AllHistory) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Probe timeline", style = MaterialTheme.typography.labelLarge)
+                        if (allHistoryTimelineItems.isEmpty()) {
+                            Text(
+                                "No mappable probe history.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            allHistoryTimelineItems.forEach { item ->
+                                Text(
+                                    formatTimelineItem(item),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+private fun formatTimelineItem(item: CellMapTimelineItem): String {
+    val time = MAP_PROBE_TIME_FORMATTER.format(Instant.ofEpochMilli(item.timestampMillis))
+    return when (item.type) {
+        CellMapTimelineItemType.ProbeStart -> "$time · Probe start"
+        CellMapTimelineItemType.ProbeStop -> buildString {
+            append("$time · Probe stop")
+            item.exitCode?.let { append(" · exit=$it") }
+            if (item.stoppedByUser == true) append(" · user stopped")
+        }
+        CellMapTimelineItemType.ProbePoint -> buildString {
+            append(time)
+            append(" · lat=${item.lat}, lon=${item.lon}")
+            append(" · accuracy=${item.accuracy?.let { "$it m" } ?: "N/A"}")
         }
     }
 }

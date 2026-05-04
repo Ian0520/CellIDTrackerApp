@@ -1,6 +1,11 @@
 package com.example.cellidtracker
 
 import android.app.Application
+import android.content.Context
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -13,6 +18,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
+import com.example.cellidtracker.data.ProbeRunEntity
 import com.example.cellidtracker.experiment.exportExperimentSessionToFile
 import com.example.cellidtracker.history.ProbeHistory
 import com.example.cellidtracker.history.encodeTowers
@@ -21,9 +27,11 @@ import com.example.cellidtracker.history.toDomain
 import com.example.cellidtracker.history.toEntity
 import com.example.cellidtracker.probe.ProbeEventFromNative
 import com.example.cellidtracker.probe.ParsedCellFromLog
+import com.example.cellidtracker.probe.ProbeDeltaEventFromNative
 import com.example.cellidtracker.probe.ProbeAssets
 import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
+import com.example.cellidtracker.probe.tryParseProbeDeltaEventFromStdoutLine
 import com.example.cellidtracker.probe.tryParseProbeEventFromStdoutLine
 import java.io.File
 import java.io.IOException
@@ -31,6 +39,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -47,10 +56,19 @@ private const val MAX_LOG_LINES = 600
 private const val MAX_LOG_LINE_CHARS = 800
 private const val LOG_PREVIEW_LINES = 20
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
+private const val MAX_IN_MEMORY_RUNS_PER_VICTIM = 200
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
 private const val AUTO_RESTART_MAX_RETRIES = 3
 private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
 private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
+private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
+private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
+private const val PROBE_START_VIBRATION_MS = 80L
+private const val PROBE_END_VIBRATION_MS = 140L
+private const val DEFAULT_PROBE_INTERVAL_SECONDS = 30
+private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
+private const val PROBE_RESULT_IDLE_RESTART_MS = 10 * 60_000L
+private const val PROBE_WATCHDOG_POLL_MS = 5_000L
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
@@ -70,8 +88,16 @@ private data class VictimUpdateResult(
     val snackbarMessage: String
 )
 
+private data class ActiveProbeRun(
+    val dbId: Long,
+    val victim: String,
+    val startedAtMillis: Long
+)
+
 private class ProbeStreamState {
     val committedCallIds = hashSetOf<String>()
+    val committedDeltaKeys = hashSetOf<String>()
+    val lastProbeEventAtMillis = AtomicLong(System.currentTimeMillis())
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -85,6 +111,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val events = _events.asSharedFlow()
     val historyByVictim = mutableStateMapOf<String, SnapshotStateList<ProbeHistory>>()
+    val probeRunsByVictim = mutableStateMapOf<String, SnapshotStateList<ProbeRunEntity>>()
 
     var victimInput by mutableStateOf("")
         private set
@@ -98,11 +125,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var cellLocation by mutableStateOf<CellLocationResult?>(null)
         private set
+    var cellMapMode by mutableStateOf(CellMapMode.Origin)
+        private set
     var intercarrierStatus by mutableStateOf(INTERCARRIER_UNKNOWN)
         private set
     var showLog by mutableStateOf(false)
         private set
     var isMoving by mutableStateOf(false)
+        private set
+    var autoRestartProbe by mutableStateOf(true)
+        private set
+    var probeIntervalSeconds by mutableStateOf(DEFAULT_PROBE_INTERVAL_SECONDS)
         private set
     var selectedHistoryVictim by mutableStateOf<String?>(null)
         private set
@@ -121,6 +154,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var userStopRequested by mutableStateOf(false)
     private var activeExperimentSessionDbId: Long? = null
+    private var activeProbeRun: ActiveProbeRun? = null
     private var forwardedLogcatLineCount = 0
 
     init {
@@ -128,6 +162,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         startLogBufferFlushLoop()
         viewModelScope.launch {
             loadHistory()
+            loadProbeRuns()
             loadActiveExperimentSession()
         }
     }
@@ -140,10 +175,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         isMoving = value
     }
 
+    fun onAutoRestartProbeChange(value: Boolean) {
+        autoRestartProbe = value
+    }
+
+    fun onProbeIntervalSecondsChange(value: Int) {
+        probeIntervalSeconds = if (value <= 45) 30 else 60
+    }
+
     fun toggleShowLog() {
         showLog = !showLog
         // Rebuild full output immediately when user opens the log panel.
         logDirty.set(true)
+    }
+
+    fun onCellMapModeChange(mode: CellMapMode) {
+        cellMapMode = mode
     }
 
     fun selectHistoryVictim(victim: String) {
@@ -162,12 +209,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _events.tryEmit(MainUiEvent.OpenProbeMap)
     }
 
+    fun mapProbePoints(nowMillis: Long = System.currentTimeMillis()): List<CellMapProbePoint> {
+        val selectedVictim = selectedHistoryVictim
+            ?: victimInput.trim().takeIf { it.isNotEmpty() }
+            ?: historyByVictim.keys.firstOrNull()
+            ?: return emptyList()
+        val history = historyByVictim[selectedVictim].orEmpty()
+        val mappableHistory = history.filter { it.lat != null && it.lon != null }
+        val candidates = when (cellMapMode) {
+            CellMapMode.AllHistory -> dedupeHistoryByContinuousCellWindow(mappableHistory)
+            CellMapMode.RecentProbes,
+            CellMapMode.Mix -> {
+                val minTimestamp = nowMillis - RECENT_MAP_WINDOW_MS
+                latestHistoryPerCell(mappableHistory.filter { it.timestampMillis >= minTimestamp })
+            }
+            CellMapMode.Origin,
+            CellMapMode.AccuracyScaled -> emptyList()
+        }
+        return candidates
+            .mapNotNull(::toCellMapProbePoint)
+            .sortedBy { it.timestampMillis }
+            .toList()
+    }
+
+    fun allHistoryTimelineItems(): List<CellMapTimelineItem> {
+        val selectedVictim = selectedHistoryVictim
+            ?: victimInput.trim().takeIf { it.isNotEmpty() }
+            ?: historyByVictim.keys.firstOrNull()
+            ?: return emptyList()
+        val pointItems = mapProbePoints().map { point ->
+            CellMapTimelineItem(
+                type = CellMapTimelineItemType.ProbePoint,
+                timestampMillis = point.timestampMillis,
+                lat = point.lat,
+                lon = point.lon,
+                accuracy = point.accuracy?.times(0.7)
+            )
+        }
+        val runItems = probeRunsByVictim[selectedVictim].orEmpty().flatMap { run ->
+            buildList {
+                add(
+                    CellMapTimelineItem(
+                        type = CellMapTimelineItemType.ProbeStart,
+                        timestampMillis = run.startedAtMillis
+                    )
+                )
+                run.endedAtMillis?.let { endedAt ->
+                    add(
+                        CellMapTimelineItem(
+                            type = CellMapTimelineItemType.ProbeStop,
+                            timestampMillis = endedAt,
+                            exitCode = run.exitCode,
+                            stoppedByUser = run.stoppedByUser
+                        )
+                    )
+                }
+            }
+        }
+        return (runItems + pointItems).sortedWith(
+            compareBy<CellMapTimelineItem> { it.timestampMillis }
+                .thenBy { timelineTypeOrder(it.type) }
+        )
+    }
+
     fun clearCurrentVictimHistory() {
         val key = selectedHistoryVictim ?: return
         viewModelScope.launch(Dispatchers.IO) {
             db.historyDao().clearForVictim(key)
+            db.probeRunDao().clearForVictim(key)
         }
         historyByVictim.remove(key)
+        probeRunsByVictim.remove(key)
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
     }
 
@@ -262,6 +374,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         isRootRunning = true
         resetProbeRunState()
+        vibrate(PROBE_START_VIBRATION_MS)
 
         viewModelScope.launch {
             try {
@@ -270,9 +383,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 var retryCount = 0
 
                 while (isRootRunning) {
+                    startProbeRun(prepared.assets, mode = "probe")
                     val streamState = ProbeStreamState()
+                    val lastStdoutAtMillis = AtomicLong(System.currentTimeMillis())
+                    val watchdogJob = launch {
+                        while (isRootRunning && !userStopRequested) {
+                            delay(PROBE_WATCHDOG_POLL_MS)
+                            val now = System.currentTimeMillis()
+                            val idleMillis = now - lastStdoutAtMillis.get()
+                            if (idleMillis >= PROBE_STDOUT_IDLE_RESTART_MS) {
+                                appendLogText(
+                                    "\n[watchdog] no probe stdout for ${idleMillis}ms; restarting native probe..."
+                                )
+                                RootShell.requestStop()
+                                break
+                            }
+                            val resultIdleMillis = now - streamState.lastProbeEventAtMillis.get()
+                            if (resultIdleMillis >= PROBE_RESULT_IDLE_RESTART_MS) {
+                                appendLogText(
+                                    "\n[watchdog] no probe result for ${resultIdleMillis}ms; restarting native probe..."
+                                )
+                                RootShell.requestStop()
+                                break
+                            }
+                        }
+                    }
                     val exitCode = try {
                         runProbeStreaming(prepared.command) { line ->
+                            lastStdoutAtMillis.set(System.currentTimeMillis())
                             runCatching {
                                 handleProbeStdoutLine(line, prepared.assets, streamState)
                             }.onFailure { t ->
@@ -283,19 +421,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } catch (e: Exception) {
                         appendLogText("\n[Auto-restart] probe runner exception: ${e.message ?: e}")
                         -999
+                    } finally {
+                        watchdogJob.cancel()
+                        watchdogJob.join()
                     }
 
                     appendProcessDone(exitCode)
+                    endProbeRun(exitCode)
 
-                    val unexpectedExit = !userStopRequested && exitCode != 0
-                    if (!unexpectedExit) {
+                    if (userStopRequested) {
+                        break
+                    }
+
+                    if (!autoRestartProbe && exitCode == 0) {
                         if (!userStopRequested) {
                             showSnackbar("Probe finished (exit $exitCode)")
                         }
                         break
                     }
 
-                    if (retryCount >= AUTO_RESTART_MAX_RETRIES) {
+                    if (!autoRestartProbe && retryCount >= AUTO_RESTART_MAX_RETRIES) {
                         appendLogText(
                             "\n[Auto-restart] max retries reached ($AUTO_RESTART_MAX_RETRIES). Stop restarting."
                         )
@@ -307,9 +452,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     retryCount += 1
                     val backoffMs = computeAutoRestartBackoffMs(retryCount)
-                    appendLogText(
-                        "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
-                    )
+                    if (autoRestartProbe) {
+                        appendLogText(
+                            "\n[Auto-restart] probe exited (exit $exitCode). Restart in ${backoffMs}ms."
+                        )
+                    } else {
+                        appendLogText(
+                            "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
+                        )
+                    }
                     delay(backoffMs)
                     if (userStopRequested || !isRootRunning) break
                     appendLogText("\n[Auto-restart] restarting probe now...")
@@ -318,8 +469,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 replaceLogText("Probe failed: ${e.message ?: e}")
                 showSnackbar("Probe failed: ${e.message ?: e}")
             } finally {
+                endProbeRun(null)
                 isRootRunning = false
                 stopProbeForegroundServiceIfIdle()
+                vibrate(PROBE_END_VIBRATION_MS)
             }
         }
     }
@@ -344,7 +497,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val prepared = prepareProbeRun("Running inter-carrier test (root)...")
                 val exitCode = runProbeStreaming(prepared.command) { line ->
                     runCatching {
-                        handleIntercarrierStdoutLine(line)
+                        handleIntercarrierStdoutLine(line, prepared.assets)
                     }.onFailure { t ->
                         Log.e(LOGCAT_TAG, "Intercarrier stdout handler crashed", t)
                         appendLogText("\n[ERR] intercarrier stdout handler exception: ${t.message ?: t}")
@@ -474,6 +627,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         streamState: ProbeStreamState
     ) {
         appendLogText("\n$line")
+        val deltaEvent = tryParseProbeDeltaEventFromStdoutLine(line)
+        if (deltaEvent != null) {
+            handleProbeDeltaEvent(deltaEvent, assets, streamState)
+        }
         val event = tryParseProbeEventFromStdoutLine(line)
         if (event != null) {
             handleProbeEvent(event, assets, streamState)
@@ -490,6 +647,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             streamState.committedCallIds.clear()
         }
         if (!streamState.committedCallIds.add(event.callId)) return
+        streamState.lastProbeEventAtMillis.set(System.currentTimeMillis())
 
         val parsed = event.parsedCell
         val deltaMs = event.deltaMs
@@ -506,14 +664,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleIntercarrierStdoutLine(line: String) {
+    private fun handleProbeDeltaEvent(
+        event: ProbeDeltaEventFromNative,
+        assets: ProbeAssets,
+        streamState: ProbeStreamState
+    ) {
+        val key = "${event.inviteMs ?: -1}:${event.prMs ?: -1}:${event.deltaMs}:${event.status ?: -1}"
+        if (!streamState.committedDeltaKeys.add(key)) return
+        viewModelScope.launch {
+            runCatching {
+                recordProbeDeltaSample(
+                    assets = assets,
+                    status = event.status,
+                    deltaMs = event.deltaMs,
+                    inviteMs = event.inviteMs,
+                    prMs = event.prMs
+                )
+            }.onFailure { t ->
+                Log.e(LOGCAT_TAG, "recordProbeDeltaSample crashed", t)
+                appendLogText("\n[ERR] delta sample exception: ${t.message ?: t}")
+            }
+        }
+    }
+
+    private fun handleIntercarrierStdoutLine(line: String, assets: ProbeAssets) {
         appendLogText("\n$line")
-        if (!line.contains(INTERCARRIER_MARKER) || userStopRequested) return
-        val deltaMs = parseDeltaMs(line) ?: return
+        val deltaEvent = tryParseProbeDeltaEventFromStdoutLine(line) ?: return
+        viewModelScope.launch {
+            runCatching {
+                recordProbeDeltaSample(
+                    assets = assets,
+                    status = deltaEvent.status,
+                    deltaMs = deltaEvent.deltaMs,
+                    inviteMs = deltaEvent.inviteMs,
+                    prMs = deltaEvent.prMs
+                )
+            }.onFailure { t ->
+                Log.e(LOGCAT_TAG, "recordProbeDeltaSample crashed", t)
+                appendLogText("\n[ERR] delta sample exception: ${t.message ?: t}")
+            }
+        }
+        if (userStopRequested) return
 
         userStopRequested = true
         RootShell.requestStop()
-        intercarrierStatus = buildIntercarrierTestStatus(deltaMs)
+        intercarrierStatus = buildIntercarrierTestStatus(deltaEvent.deltaMs)
     }
 
     private suspend fun lookupLocationForParsedCell(
@@ -583,6 +778,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val towersJson = encodeTowers(payloadUsed)
         val movingSnapshot = isMoving
         val activeSessionSnapshot = activeExperimentSessionDbId
+        val activeProbeRunIdSnapshot = activeProbeRun?.dbId
         val entry = ProbeHistory(
             mcc = parsed.mcc,
             mnc = parsed.mnc,
@@ -596,7 +792,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             towersCount = payloadUsed.size,
             towersJson = towersJson,
             moving = movingSnapshot,
-            deltaMs = deltaMs
+            deltaMs = deltaMs,
+            probeRunId = activeProbeRunIdSnapshot
         )
 
         val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
@@ -627,10 +824,58 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         towersJson = towersJson,
                         moving = movingSnapshot,
                         deltaMs = deltaMs,
+                        sampleType = "cell",
+                        sipStatus = null,
+                        inviteMs = null,
+                        prMs = null,
+                        intercarrierCandidate = deltaMs?.let { isIntercarrierDelta(it) },
                         createdAtMillis = recordedAtMillis
                     )
                 )
             }
+        }
+    }
+
+    private suspend fun recordProbeDeltaSample(
+        assets: ProbeAssets,
+        status: Int?,
+        deltaMs: Long,
+        inviteMs: Long?,
+        prMs: Long?
+    ) {
+        val activeSessionSnapshot = activeExperimentSessionDbId ?: return
+        val victimKey = currentVictimFromList(assets.workDir)
+            .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
+        val recordedAtMillis = System.currentTimeMillis()
+        val movingSnapshot = isMoving
+
+        withContext(Dispatchers.IO) {
+            db.experimentDao().insertSample(
+                ExperimentSampleEntity(
+                    sessionDbId = activeSessionSnapshot,
+                    recordedAtMillis = recordedAtMillis,
+                    victim = victimKey,
+                    mcc = -1,
+                    mnc = -1,
+                    lac = -1,
+                    cid = -1,
+                    estimatedLat = null,
+                    estimatedLon = null,
+                    estimatedAccuracyM = null,
+                    geolocationStatus = "delta_only",
+                    geolocationError = null,
+                    towersCount = 0,
+                    towersJson = "[]",
+                    moving = movingSnapshot,
+                    deltaMs = deltaMs,
+                    sampleType = "delta",
+                    sipStatus = status,
+                    inviteMs = inviteMs,
+                    prMs = prMs,
+                    intercarrierCandidate = isIntercarrierDelta(deltaMs),
+                    createdAtMillis = recordedAtMillis
+                )
+            )
         }
     }
 
@@ -644,8 +889,61 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         RootShell.runAsRoot(command)
     }
 
+    private suspend fun startProbeRun(assets: ProbeAssets, mode: String) {
+        val victimKey = currentVictimFromList(assets.workDir)
+            .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
+        val now = System.currentTimeMillis()
+        val run = ProbeRunEntity(
+            victim = victimKey,
+            mode = mode,
+            startedAtMillis = now,
+            endedAtMillis = null,
+            exitCode = null,
+            stoppedByUser = false,
+            createdAtMillis = now
+        )
+        val runId = withContext(Dispatchers.IO) {
+            db.probeRunDao().insert(run)
+        }
+        val savedRun = run.copy(id = runId)
+        activeProbeRun = ActiveProbeRun(
+            dbId = runId,
+            victim = victimKey,
+            startedAtMillis = now
+        )
+        val list = probeRunsByVictim.getOrPut(victimKey) { mutableStateListOf() }
+        list.add(savedRun)
+        if (list.size > MAX_IN_MEMORY_RUNS_PER_VICTIM) {
+            list.removeRange(0, list.size - MAX_IN_MEMORY_RUNS_PER_VICTIM)
+        }
+    }
+
+    private suspend fun endProbeRun(exitCode: Int?) {
+        val run = activeProbeRun ?: return
+        activeProbeRun = null
+        val endedAtMillis = System.currentTimeMillis()
+        val stoppedByUserSnapshot = userStopRequested
+        withContext(Dispatchers.IO) {
+            db.probeRunDao().endRun(
+                id = run.dbId,
+                endedAtMillis = endedAtMillis,
+                exitCode = exitCode,
+                stoppedByUser = stoppedByUserSnapshot
+            )
+        }
+        val list = probeRunsByVictim[run.victim] ?: return
+        val index = list.indexOfFirst { it.id == run.dbId }
+        if (index >= 0) {
+            list[index] = list[index].copy(
+                endedAtMillis = endedAtMillis,
+                exitCode = exitCode,
+                stoppedByUser = stoppedByUserSnapshot
+            )
+        }
+    }
+
     private fun buildProbeCommand(assets: ProbeAssets): String {
-        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' ./probe/spoof -r -d --verbose 1"
+        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r -d --verbose 1"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {
@@ -677,10 +975,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     private fun buildIntercarrierTestStatus(deltaMs: Long?): String {
         return when {
             deltaMs == null -> INTERCARRIER_UNKNOWN
-            deltaMs <= 600 -> "Inter-carrier: Yes (delta=${deltaMs} ms) — This target is Inter-Carrier. Cannot probe."
+            isIntercarrierDelta(deltaMs) -> "Inter-carrier: Yes (delta=${deltaMs} ms) — This target is Inter-Carrier. Cannot probe."
             else -> "Inter-carrier: No (delta=${deltaMs} ms)"
         }
     }
+
+    private fun isIntercarrierDelta(deltaMs: Long): Boolean = deltaMs <= 600
 
     private fun buildGeoSuccessLog(location: CellLocationResult): String = buildString {
         appendLine()
@@ -691,16 +991,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
     }
 
-    private fun parseDeltaMs(line: String): Long? {
-        return Regex("delta_ms=([0-9]+)")
-            .find(line)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toLongOrNull()
-    }
-
     private fun computeAutoRestartBackoffMs(retryCount: Int): Long {
-        val exponent = (retryCount - 1).coerceAtLeast(0)
+        val exponent = (retryCount - 1).coerceIn(0, 4)
         var delayMs = AUTO_RESTART_BASE_BACKOFF_MS
         repeat(exponent) {
             delayMs = (delayMs * 2).coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
@@ -729,7 +1021,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
         recentTowers.add(0, tower)
         if (recentTowers.size > 5) {
-            recentTowers.removeLast()
+            recentTowers.removeAt(recentTowers.lastIndex)
         }
     }
 
@@ -743,7 +1035,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val dao = db.historyDao()
         val loaded = withContext(Dispatchers.IO) {
             dao.getVictims().associateWith { victim ->
-                dao.getHistoryForVictim(victim).map { it.toDomain() }
+                dao.getRecentHistoryForVictim(victim, MAX_IN_MEMORY_HISTORY_PER_VICTIM).map { it.toDomain() }
             }
         }
 
@@ -752,6 +1044,20 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             historyByVictim[victim] = mutableStateListOf<ProbeHistory>().apply { addAll(list) }
         }
         selectedHistoryVictim = historyByVictim.keys.firstOrNull()
+    }
+
+    private suspend fun loadProbeRuns() {
+        val dao = db.probeRunDao()
+        val loaded = withContext(Dispatchers.IO) {
+            dao.getVictims().associateWith { victim ->
+                dao.getRecentRunsForVictim(victim, MAX_IN_MEMORY_RUNS_PER_VICTIM)
+            }
+        }
+
+        probeRunsByVictim.clear()
+        loaded.forEach { (victim, list) ->
+            probeRunsByVictim[victim] = mutableStateListOf<ProbeRunEntity>().apply { addAll(list) }
+        }
     }
 
     private fun generateTimestampSessionId(nowMillis: Long): String {
@@ -803,6 +1109,33 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         _events.tryEmit(MainUiEvent.ShowSnackbar(message))
     }
 
+    private fun vibrate(durationMillis: Long) {
+        runCatching {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val manager = appContext.getSystemService(VibratorManager::class.java)
+                manager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            } ?: return
+
+            if (!vibrator.hasVibrator()) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(
+                    VibrationEffect.createOneShot(
+                        durationMillis,
+                        VibrationEffect.DEFAULT_AMPLITUDE
+                    )
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(durationMillis)
+            }
+        }.onFailure { e ->
+            Log.w(LOGCAT_TAG, "Vibration failed: ${e.message}", e)
+        }
+    }
+
     private fun appendLogText(text: String) {
         text.lineSequence().forEach { line ->
             val boundedLine = if (line.length > MAX_LOG_LINE_CHARS) {
@@ -838,6 +1171,67 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 private fun isSipStatusSummaryLine(rawLine: String): Boolean {
     val normalized = rawLine.replace(ANSI_COLOR_REGEX, "")
     return SIP_STATUS_LOG_REGEX.containsMatchIn(normalized)
+}
+
+private fun cellIdentityKey(item: ProbeHistory): String {
+    return "${item.mcc}:${item.mnc}:${item.lac}:${item.cid}"
+}
+
+private fun runAwareCellIdentityKey(item: ProbeHistory): String {
+    val runKey = item.probeRunId?.toString() ?: "legacy:${item.timestampMillis}"
+    return "$runKey:${cellIdentityKey(item)}"
+}
+
+private fun latestHistoryPerCell(items: List<ProbeHistory>): List<ProbeHistory> {
+    return items
+        .groupBy(::cellIdentityKey)
+        .values
+        .mapNotNull { entries -> entries.maxByOrNull { it.timestampMillis } }
+}
+
+private fun dedupeHistoryByContinuousCellWindow(items: List<ProbeHistory>): List<ProbeHistory> {
+    return items
+        .groupBy(::runAwareCellIdentityKey)
+        .values
+        .flatMap { entries ->
+            val sorted = entries.sortedBy { it.timestampMillis }
+            if (sorted.isEmpty()) return@flatMap emptyList()
+
+            val retained = mutableListOf<ProbeHistory>()
+            var firstInSegment = sorted.first()
+            var previousInSegment = sorted.first()
+            sorted.drop(1).forEach { item ->
+                val gapMillis = item.timestampMillis - previousInSegment.timestampMillis
+                if (gapMillis <= CELL_HISTORY_DEDUPE_WINDOW_MS) {
+                    previousInSegment = item
+                } else {
+                    retained.add(firstInSegment)
+                    firstInSegment = item
+                    previousInSegment = item
+                }
+            }
+            retained.add(firstInSegment)
+            retained
+        }
+}
+
+private fun toCellMapProbePoint(item: ProbeHistory): CellMapProbePoint? {
+    val itemLat = item.lat ?: return null
+    val itemLon = item.lon ?: return null
+    return CellMapProbePoint(
+        lat = itemLat,
+        lon = itemLon,
+        accuracy = item.accuracy,
+        timestampMillis = item.timestampMillis
+    )
+}
+
+private fun timelineTypeOrder(type: CellMapTimelineItemType): Int {
+    return when (type) {
+        CellMapTimelineItemType.ProbeStart -> 0
+        CellMapTimelineItemType.ProbePoint -> 1
+        CellMapTimelineItemType.ProbeStop -> 2
+    }
 }
 
 private fun ParsedCellFromLog.toTowerParams(): CellTowerParams {

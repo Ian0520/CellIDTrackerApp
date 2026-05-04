@@ -30,6 +30,11 @@ class ExperimentExportTest {
                     towersJson = "[{\"cid\":1}]",
                     moving = false,
                     deltaMs = 700,
+                    sampleType = "cell",
+                    sipStatus = 183,
+                    inviteMs = 100,
+                    prMs = 800,
+                    intercarrierCandidate = false,
                     createdAtMillis = 2000
                 )
             ),
@@ -42,7 +47,7 @@ class ExperimentExportTest {
             )
         )
 
-        assertEquals(1, payload.schemaVersion)
+        assertEquals(2, payload.schemaVersion)
         assertEquals("probe", payload.appType)
         assertEquals("session-11", payload.sessionId)
         assertEquals(1000L, payload.startedAtMillis)
@@ -64,6 +69,11 @@ class ExperimentExportTest {
         assertEquals(2, sample.towersCount)
         assertEquals("[{\"cid\":1}]", sample.towersJson)
         assertEquals(700L, sample.deltaMs)
+        assertEquals("cell", sample.sampleType)
+        assertEquals(183, sample.sipStatus)
+        assertEquals(100L, sample.inviteMs)
+        assertEquals(800L, sample.prMs)
+        assertEquals(false, sample.intercarrierCandidate)
     }
 
     @Test
@@ -89,6 +99,11 @@ class ExperimentExportTest {
                     towersJson = "[]",
                     moving = false,
                     deltaMs = null,
+                    sampleType = "cell",
+                    sipStatus = null,
+                    inviteMs = null,
+                    prMs = null,
+                    intercarrierCandidate = null,
                     createdAtMillis = 5000
                 ),
                 ExperimentSampleEntity(
@@ -109,6 +124,11 @@ class ExperimentExportTest {
                     towersJson = "[]",
                     moving = false,
                     deltaMs = null,
+                    sampleType = "cell",
+                    sipStatus = null,
+                    inviteMs = null,
+                    prMs = null,
+                    intercarrierCandidate = null,
                     createdAtMillis = 1000
                 )
             ),

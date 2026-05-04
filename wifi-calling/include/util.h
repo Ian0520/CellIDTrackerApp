@@ -30,6 +30,7 @@ namespace util {
     bool rlRemoteCellIDProber = false;
     bool unavailabilityEval = false;
     bool detectEval = false;
+    int probeIntervalSeconds = 30;
   };
 
   extern Context context;

@@ -9,9 +9,18 @@ data class ProbeEventFromNative(
     val parsedCell: ParsedCellFromLog
 )
 
+data class ProbeDeltaEventFromNative(
+    val status: Int?,
+    val deltaMs: Long,
+    val inviteMs: Long?,
+    val prMs: Long?
+)
+
 private val PROBE_EVENT_REGEX = Regex(
     """^\[probe_event\]\s+call_id=([^\s]+)\s+status=(\d+)\s+delta_ms=(\d+)\s+invite_ms=(\d+)\s+pr_ms=(\d+)\s+mcc=(\d+)\s+mnc=(\d+)\s+lac=(\d+)\s+cid=(\d+)\s*$"""
 )
+
+private val DELTA_FIELD_REGEX = Regex("""\b(status|delta_ms|invite|pr)=([0-9]+)\b""")
 
 fun tryParseProbeEventFromStdoutLine(line: String): ProbeEventFromNative? {
     val match = PROBE_EVENT_REGEX.matchEntire(line.trim()) ?: return null
@@ -32,5 +41,20 @@ fun tryParseProbeEventFromStdoutLine(line: String): ProbeEventFromNative? {
         inviteMs = inviteMs,
         prMs = prMs,
         parsedCell = ParsedCellFromLog(mcc = mcc, mnc = mnc, lac = lac, cid = cid)
+    )
+}
+
+fun tryParseProbeDeltaEventFromStdoutLine(line: String): ProbeDeltaEventFromNative? {
+    val trimmed = line.trim()
+    if (!trimmed.startsWith("[intercarrier]")) return null
+    val fields = DELTA_FIELD_REGEX.findAll(trimmed).associate { match ->
+        match.groupValues[1] to match.groupValues[2]
+    }
+    val deltaMs = fields["delta_ms"]?.toLongOrNull() ?: return null
+    return ProbeDeltaEventFromNative(
+        status = fields["status"]?.toIntOrNull(),
+        deltaMs = deltaMs,
+        inviteMs = fields["invite"]?.toLongOrNull(),
+        prMs = fields["pr"]?.toLongOrNull()
     )
 }

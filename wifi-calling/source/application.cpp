@@ -771,7 +771,10 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   std::vector<double> probeIntervals;
   std::thread inviteThread;
   bool expobackoff;
+  const auto minFreshInviteInterval = std::chrono::seconds(util::context.probeIntervalSeconds);
   constexpr auto kTerminateWatchdog = std::chrono::seconds(10);
+  constexpr auto kInviteWatchdog = std::chrono::seconds(20);
+  constexpr auto kProvisionalWatchdog = std::chrono::seconds(20);
   auto watchedState = session.currentSipState;
   auto watchedStateAt = std::chrono::steady_clock::now();
 
@@ -783,30 +786,63 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
   };
 
   auto applyTerminateWatchdog = [&]() {
-    if (session.currentSipState != SipState::CANCEL &&
-        session.currentSipState != SipState::REQUESTERMINATE) {
-      return;
-    }
-
     const auto elapsed = std::chrono::steady_clock::now() - watchedStateAt;
-    if (elapsed < kTerminateWatchdog) return;
 
-    if (session.currentSipState == SipState::CANCEL) {
+    if (session.currentSipState == SipState::INVITE && elapsed >= kInviteWatchdog) {
       if (util::context.verbose) {
-        std::cout << "[watchdog] CANCEL stuck >10s, forcing retry path" << std::endl;
-      }
-      session.state.retryCancelPending = true;
-      session.state.retryInvitePending = false;
-      session.setSipState(SipState::BUSY, "watchdog: cancel stuck");
-    } else {
-      if (util::context.verbose) {
-        std::cout << "[watchdog] REQUESTERMINATE stuck >10s, forcing fresh INVITE" << std::endl;
+        std::cout << "[watchdog] INVITE stuck >20s, forcing fresh INVITE" << std::endl;
       }
       session.state.retryCancelPending = false;
       session.state.retryInvitePending = true;
-      session.setSipState(SipState::BUSY, "watchdog: request terminate stuck");
+      session.setSipState(SipState::BUSY, "watchdog: invite stuck");
+      noteStateTransition();
+      return;
     }
-    noteStateTransition();
+
+    if ((session.currentSipState == SipState::SPROG ||
+         session.currentSipState == SipState::PRACK) &&
+        elapsed >= kProvisionalWatchdog) {
+      if (util::context.verbose) {
+        std::cout << "[watchdog] provisional flow stuck >20s, forcing cancel retry path" << std::endl;
+      }
+      session.state.retryCancelPending = true;
+      session.state.retryInvitePending = false;
+      session.setSipState(SipState::BUSY, "watchdog: provisional stuck");
+      noteStateTransition();
+      return;
+    }
+
+    if ((session.currentSipState == SipState::CANCEL ||
+         session.currentSipState == SipState::REQUESTERMINATE) &&
+        elapsed >= kTerminateWatchdog) {
+      if (session.currentSipState == SipState::CANCEL) {
+        if (util::context.verbose) {
+          std::cout << "[watchdog] CANCEL stuck >10s, forcing retry path" << std::endl;
+        }
+        session.state.retryCancelPending = true;
+        session.state.retryInvitePending = false;
+        session.setSipState(SipState::BUSY, "watchdog: cancel stuck");
+      } else {
+        if (util::context.verbose) {
+          std::cout << "[watchdog] REQUESTERMINATE stuck >10s, forcing fresh INVITE" << std::endl;
+        }
+        session.state.retryCancelPending = false;
+        session.state.retryInvitePending = true;
+        session.setSipState(SipState::BUSY, "watchdog: request terminate stuck");
+      }
+      noteStateTransition();
+    }
+  };
+
+  auto freshInviteDelayRemaining = [&]() {
+    if (!session.state.t_invite.has_value()) {
+      return std::chrono::steady_clock::duration::zero();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - *session.state.t_invite;
+    if (elapsed >= minFreshInviteInterval) {
+      return std::chrono::steady_clock::duration::zero();
+    }
+    return minFreshInviteInterval - elapsed;
   };
 
   while (true) {
@@ -883,6 +919,15 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
           }
 
           if (session.state.retryInvitePending) {
+            const auto waitRemaining = freshInviteDelayRemaining();
+            if (waitRemaining > std::chrono::steady_clock::duration::zero()) {
+              if (util::context.verbose) {
+                const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(waitRemaining).count();
+                std::cout << "[rate-limit] fresh INVITE delayed " << waitMs
+                          << "ms to avoid rapid retry/forwarding loop" << std::endl;
+              }
+              break;
+            }
             if (util::context.verbose > 1) std::cout << "SEND INVITE" << std::endl;
             prepareFreshInvite(back);
             armInviteTiming(back.invite);

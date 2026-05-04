@@ -15,7 +15,8 @@ data class ProbeHistory(
     val towersCount: Int,
     val towersJson: String,
     val moving: Boolean,
-    val deltaMs: Long?
+    val deltaMs: Long?,
+    val probeRunId: Long?
 )
 
 fun ProbeHistoryEntity.toDomain(): ProbeHistory =
@@ -32,7 +33,8 @@ fun ProbeHistoryEntity.toDomain(): ProbeHistory =
         towersCount = towersCount,
         towersJson = towersJson,
         moving = moving,
-        deltaMs = deltaMs
+        deltaMs = deltaMs,
+        probeRunId = probeRunId
     )
 
 fun ProbeHistory.toEntity(): ProbeHistoryEntity =
@@ -49,5 +51,6 @@ fun ProbeHistory.toEntity(): ProbeHistoryEntity =
         towersCount = towersCount,
         towersJson = towersJson,
         moving = moving,
-        deltaMs = deltaMs
+        deltaMs = deltaMs,
+        probeRunId = probeRunId
     )

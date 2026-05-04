@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val PROBE_SESSION_EXPORT_SCHEMA_VERSION = 1
+private const val PROBE_SESSION_EXPORT_SCHEMA_VERSION = 2
 private const val PROBE_SESSION_EXPORT_APP_TYPE = "probe"
 
 data class ProbeExportAppInfo(
@@ -38,6 +38,11 @@ data class ProbeSessionSampleExportPayload(
     val towersCount: Int,
     val towersJson: String,
     val deltaMs: Long?,
+    val sampleType: String,
+    val sipStatus: Int?,
+    val inviteMs: Long?,
+    val prMs: Long?,
+    val intercarrierCandidate: Boolean?,
     val moving: Boolean
 )
 
@@ -90,6 +95,11 @@ fun buildExperimentSessionExportPayload(
                 towersCount = sample.towersCount,
                 towersJson = sample.towersJson,
                 deltaMs = sample.deltaMs,
+                sampleType = sample.sampleType,
+                sipStatus = sample.sipStatus,
+                inviteMs = sample.inviteMs,
+                prMs = sample.prMs,
+                intercarrierCandidate = sample.intercarrierCandidate,
                 moving = sample.moving
             )
         }
@@ -180,6 +190,11 @@ private fun sampleToJson(sample: ProbeSessionSampleExportPayload): JSONObject {
         .put("towersCount", sample.towersCount)
         .put("towersJson", sample.towersJson)
         .put("deltaMs", jsonValue(sample.deltaMs))
+        .put("sampleType", sample.sampleType)
+        .put("sipStatus", jsonValue(sample.sipStatus))
+        .put("inviteMs", jsonValue(sample.inviteMs))
+        .put("prMs", jsonValue(sample.prMs))
+        .put("intercarrierCandidate", jsonValue(sample.intercarrierCandidate))
         .put("moving", sample.moving)
 }
 
