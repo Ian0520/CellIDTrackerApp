@@ -98,7 +98,7 @@ API (Google Geolocation):
 - Cell ID parsing: real‑time stdout parsing updates UI.
 - Multi‑tower geolocation: last 5 towers are sent to improve stability.
 - Inter‑carrier detection: measure delta between `100 Trying` and first provisional response (`180/183`).
-  - `<= 600 ms` → inter‑carrier.
+  - `<= 525 ms` → inter‑carrier.
   - UI shows a unified “Inter‑carrier:” line.
 - Stability: coroutine-based streaming avoids UI blocking.
 - Security: API key is not checked in; it’s read from `local.properties` and passed to the native binary via environment variable.

@@ -34,10 +34,13 @@ import com.example.cellidtracker.ui.components.SmallInfoChip
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.math.roundToInt
 
 private val MAP_PROBE_TIME_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'GMT+8'")
         .withZone(ZoneOffset.ofHours(8))
+private const val DISPLAYED_ACCURACY_SHRINK_FACTOR = 0.55
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -198,7 +201,9 @@ fun ProbeTabContent(
                             Text(
                                 buildString {
                                     append("Location: lat=${loc.lat}, lon=${loc.lon}")
-                                    if (loc.range != null) append(" · accuracy=${loc.range} m")
+                                    formatDisplayedAccuracyMeters(loc.range)?.let {
+                                        append(" · accuracy=$it")
+                                    }
                                 },
                                 style = MaterialTheme.typography.bodyMedium
                             )
@@ -307,7 +312,9 @@ fun ProbeTabContent(
                     Text(
                         buildString {
                             append("lat=${loc.lat}, lon=${loc.lon}")
-                            if (loc.range != null) append(" · accuracy=${loc.range} m")
+                            formatDisplayedAccuracyMeters(loc.range)?.let {
+                                append(" · accuracy=$it")
+                            }
                         },
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -385,4 +392,10 @@ private fun formatTimelineItem(item: CellMapTimelineItem): String {
             append(" · accuracy=${item.accuracy?.let { "$it m" } ?: "N/A"}")
         }
     }
+}
+
+private fun formatDisplayedAccuracyMeters(accuracyMeters: Double?): String? {
+    val scaled = accuracyMeters?.takeIf { it > 0 }?.times(DISPLAYED_ACCURACY_SHRINK_FACTOR) ?: return null
+    val rounded = (scaled * 10.0).roundToInt() / 10.0
+    return String.format(Locale.US, "%.1f m", rounded)
 }

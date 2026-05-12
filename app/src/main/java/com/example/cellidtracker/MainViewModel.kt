@@ -69,6 +69,8 @@ private const val DEFAULT_PROBE_INTERVAL_SECONDS = 30
 private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
 private const val PROBE_RESULT_IDLE_RESTART_MS = 10 * 60_000L
 private const val PROBE_WATCHDOG_POLL_MS = 5_000L
+private const val INTERCARRIER_DELTA_THRESHOLD_MS = 525L
+private const val ACCURACY_SHRINK_FACTOR = 0.55
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
@@ -243,7 +245,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 timestampMillis = point.timestampMillis,
                 lat = point.lat,
                 lon = point.lon,
-                accuracy = point.accuracy?.times(0.7)
+                accuracy = point.accuracy?.times(ACCURACY_SHRINK_FACTOR)
             )
         }
         val runItems = probeRunsByVictim[selectedVictim].orEmpty().flatMap { run ->
@@ -980,7 +982,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
     }
 
-    private fun isIntercarrierDelta(deltaMs: Long): Boolean = deltaMs <= 600
+    private fun isIntercarrierDelta(deltaMs: Long): Boolean = deltaMs <= INTERCARRIER_DELTA_THRESHOLD_MS
 
     private fun buildGeoSuccessLog(location: CellLocationResult): String = buildString {
         appendLine()
