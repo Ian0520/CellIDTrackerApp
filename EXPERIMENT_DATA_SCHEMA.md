@@ -53,7 +53,7 @@ Each item in `samples`:
 | `sipStatus` | int or null | SIP provisional status for delta samples, usually `180` or `183`; may be null for older native logs |
 | `inviteMs` | long or null | Native steady-clock timestamp for INVITE send time, from `[intercarrier] invite=...` |
 | `prMs` | long or null | Native steady-clock timestamp for first provisional response, from `[intercarrier] pr=...` |
-| `intercarrierCandidate` | boolean or null | App threshold classification for delta-only analysis; currently `true` when `deltaMs <= 600` |
+| `intercarrierCandidate` | boolean or null | App threshold classification for delta-only analysis; currently `true` when `deltaMs <= 525` |
 | `moving` | boolean | Manual UI toggle snapshot (not GPS-derived) |
 
 `towersJson` string decodes to array of objects:

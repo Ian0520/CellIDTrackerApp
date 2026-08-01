@@ -18,9 +18,11 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Polygon
 
+private const val ACCURACY_SHRINK_FACTOR = 0.55
+
 enum class CellMapMode(val label: String) {
     Origin("origin"),
-    AccuracyScaled("accuracy x0.7"),
+    AccuracyScaled("accuracy x0.55"),
     RecentProbes("recent 3 min"),
     Mix("mix"),
     AllHistory("all history")
@@ -103,7 +105,7 @@ fun CellMapView(
                     CellMapMode.RecentProbes,
                     CellMapMode.AllHistory -> effectiveAccuracy
                     CellMapMode.Mix,
-                    CellMapMode.AccuracyScaled -> effectiveAccuracy?.times(0.7)
+                    CellMapMode.AccuracyScaled -> effectiveAccuracy?.times(ACCURACY_SHRINK_FACTOR)
                 }
                 // 調整縮放，確保精度圈可以落在可視範圍內
                 val zoom = when {
@@ -136,7 +138,7 @@ fun CellMapView(
                             mode == CellMapMode.Mix ||
                             mode == CellMapMode.AllHistory
                         ) {
-                            0.7
+                            ACCURACY_SHRINK_FACTOR
                         } else {
                             1.0
                         }
