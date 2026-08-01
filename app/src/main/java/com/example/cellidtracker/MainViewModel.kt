@@ -66,6 +66,7 @@ private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
 private const val DEFAULT_PROBE_INTERVAL_SECONDS = 30
+private val PROBE_INTERVAL_OPTIONS = setOf(0, 5, 10, 20, 30, 60)
 private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
 private const val PROBE_RESULT_IDLE_RESTART_MS = 10 * 60_000L
 private const val PROBE_WATCHDOG_POLL_MS = 5_000L
@@ -185,11 +186,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onProbeIntervalSecondsChange(value: Int) {
-        probeIntervalSeconds = when {
-            value <= 0 -> 0
-            value <= 45 -> 30
-            else -> 60
-        }
+        probeIntervalSeconds = value.takeIf { it in PROBE_INTERVAL_OPTIONS }
+            ?: DEFAULT_PROBE_INTERVAL_SECONDS
     }
 
     fun onSessionProgressResponseLimitChange(value: Int?) {

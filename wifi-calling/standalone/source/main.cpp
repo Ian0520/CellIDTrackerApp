@@ -27,10 +27,18 @@ int readProbeIntervalSeconds() {
   if (raw == nullptr) return 30;
   char* end = nullptr;
   const long parsed = std::strtol(raw, &end, 10);
-  if (end == raw || parsed < 0) return 30;
-  if (parsed == 0) return 0;
-  if (parsed <= 45) return 30;
-  return 60;
+  if (end == raw || *end != '\0') return 30;
+  switch (parsed) {
+    case 0:
+    case 5:
+    case 10:
+    case 20:
+    case 30:
+    case 60:
+      return static_cast<int>(parsed);
+    default:
+      return 30;
+  }
 }
 }
 

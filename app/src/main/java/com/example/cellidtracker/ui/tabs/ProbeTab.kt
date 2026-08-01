@@ -274,9 +274,10 @@ fun ProbeTabContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     FilterChip(
                         selected = probeIntervalSeconds == 0,
@@ -284,6 +285,14 @@ fun ProbeTabContent(
                         enabled = !isRootRunning && !isIntercarrierRunning,
                         label = { Text("0s") }
                     )
+                    listOf(5, 10, 20).forEach { intervalSeconds ->
+                        FilterChip(
+                            selected = probeIntervalSeconds == intervalSeconds,
+                            onClick = { onProbeIntervalSecondsChange(intervalSeconds) },
+                            enabled = !isRootRunning && !isIntercarrierRunning,
+                            label = { Text("${intervalSeconds}s") }
+                        )
+                    }
                     FilterChip(
                         selected = probeIntervalSeconds == 30,
                         onClick = { onProbeIntervalSecondsChange(30) },
