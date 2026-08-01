@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val PROBE_SESSION_EXPORT_SCHEMA_VERSION = 2
+private const val PROBE_SESSION_EXPORT_SCHEMA_VERSION = 3
 private const val PROBE_SESSION_EXPORT_APP_TYPE = "probe"
 
 data class ProbeExportAppInfo(
@@ -43,6 +43,15 @@ data class ProbeSessionSampleExportPayload(
     val inviteMs: Long?,
     val prMs: Long?,
     val intercarrierCandidate: Boolean?,
+    val probeId: String?,
+    val inviteSentAtMillis: Long?,
+    val responseReceivedAtMillis: Long?,
+    val outcome: String?,
+    val intervalSincePreviousProbeMs: Long?,
+    val wifiRssiDbm: Int?,
+    val wifiFrequencyMhz: Int?,
+    val wifiLinkSpeedMbps: Int?,
+    val wifiBssidHash: String?,
     val moving: Boolean
 )
 
@@ -100,6 +109,15 @@ fun buildExperimentSessionExportPayload(
                 inviteMs = sample.inviteMs,
                 prMs = sample.prMs,
                 intercarrierCandidate = sample.intercarrierCandidate,
+                probeId = sample.probeId,
+                inviteSentAtMillis = sample.inviteSentAtMillis,
+                responseReceivedAtMillis = sample.responseReceivedAtMillis,
+                outcome = sample.outcome,
+                intervalSincePreviousProbeMs = sample.intervalSincePreviousProbeMs,
+                wifiRssiDbm = sample.wifiRssiDbm,
+                wifiFrequencyMhz = sample.wifiFrequencyMhz,
+                wifiLinkSpeedMbps = sample.wifiLinkSpeedMbps,
+                wifiBssidHash = sample.wifiBssidHash,
                 moving = sample.moving
             )
         }
@@ -195,6 +213,15 @@ private fun sampleToJson(sample: ProbeSessionSampleExportPayload): JSONObject {
         .put("inviteMs", jsonValue(sample.inviteMs))
         .put("prMs", jsonValue(sample.prMs))
         .put("intercarrierCandidate", jsonValue(sample.intercarrierCandidate))
+        .put("probeId", jsonValue(sample.probeId))
+        .put("inviteSentAtMillis", jsonValue(sample.inviteSentAtMillis))
+        .put("responseReceivedAtMillis", jsonValue(sample.responseReceivedAtMillis))
+        .put("outcome", jsonValue(sample.outcome))
+        .put("intervalSincePreviousProbeMs", jsonValue(sample.intervalSincePreviousProbeMs))
+        .put("wifiRssiDbm", jsonValue(sample.wifiRssiDbm))
+        .put("wifiFrequencyMhz", jsonValue(sample.wifiFrequencyMhz))
+        .put("wifiLinkSpeedMbps", jsonValue(sample.wifiLinkSpeedMbps))
+        .put("wifiBssidHash", jsonValue(sample.wifiBssidHash))
         .put("moving", sample.moving)
 }
 

@@ -139,6 +139,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var probeIntervalSeconds by mutableStateOf(DEFAULT_PROBE_INTERVAL_SECONDS)
         private set
+    var sessionProgressResponseLimit by mutableStateOf<Int?>(null)
+        private set
     var selectedHistoryVictim by mutableStateOf<String?>(null)
         private set
     var mccInput by mutableStateOf("")
@@ -158,6 +160,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeExperimentSessionDbId: Long? = null
     private var activeProbeRun: ActiveProbeRun? = null
     private var forwardedLogcatLineCount = 0
+    private val lastRecordedProbeResponseAtMillis = AtomicLong(-1L)
 
     init {
         stopProbeForegroundServiceIfIdle()
@@ -182,7 +185,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onProbeIntervalSecondsChange(value: Int) {
-        probeIntervalSeconds = if (value <= 45) 30 else 60
+        probeIntervalSeconds = when {
+            value <= 0 -> 0
+            value <= 45 -> 30
+            else -> 60
+        }
+    }
+
+    fun onSessionProgressResponseLimitChange(value: Int?) {
+        sessionProgressResponseLimit = value?.coerceIn(1, 6)
     }
 
     fun toggleShowLog() {
@@ -301,7 +312,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showSnackbar("An experiment session is already active.")
             return
         }
-
         viewModelScope.launch {
             try {
                 val now = System.currentTimeMillis()
@@ -649,7 +659,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             streamState.committedCallIds.clear()
         }
         if (!streamState.committedCallIds.add(event.callId)) return
-        streamState.lastProbeEventAtMillis.set(System.currentTimeMillis())
+        val responseReceivedAtMillis = System.currentTimeMillis()
+        streamState.lastProbeEventAtMillis.set(responseReceivedAtMillis)
 
         val parsed = event.parsedCell
         val deltaMs = event.deltaMs
@@ -658,7 +669,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             runCatching {
-                lookupLocationForParsedCell(assets, parsed, deltaMs)
+                lookupLocationForParsedCell(
+                    assets = assets,
+                    parsed = parsed,
+                    deltaMs = deltaMs,
+                    probeId = event.callId,
+                    sipStatus = event.status,
+                    inviteMs = event.inviteMs,
+                    prMs = event.prMs,
+                    responseReceivedAtMillis = responseReceivedAtMillis
+                )
             }.onFailure { t ->
                 Log.e(LOGCAT_TAG, "lookupLocationForParsedCell crashed", t)
                 appendLogText("\n[ERR] lookup exception: ${t.message ?: t}")
@@ -716,7 +736,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun lookupLocationForParsedCell(
         assets: ProbeAssets,
         parsed: ParsedCellFromLog,
-        deltaMs: Long?
+        deltaMs: Long?,
+        probeId: String,
+        sipStatus: Int,
+        inviteMs: Long,
+        prMs: Long,
+        responseReceivedAtMillis: Long
     ) {
         val payloadUsed = listOf(parsed.toTowerParams())
 
@@ -744,7 +769,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         payloadUsed = payloadUsed,
                         deltaMs = deltaMs,
                         geolocationStatus = "success",
-                        geolocationError = null
+                        geolocationError = null,
+                        probeId = probeId,
+                        sipStatus = sipStatus,
+                        inviteMs = inviteMs,
+                        prMs = prMs,
+                        responseReceivedAtMillis = responseReceivedAtMillis
                     )
                     buildGeoSuccessLog(location)
                 },
@@ -757,7 +787,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         payloadUsed = payloadUsed,
                         deltaMs = deltaMs,
                         geolocationStatus = "failure",
-                        geolocationError = error.message ?: error.toString()
+                        geolocationError = error.message ?: error.toString(),
+                        probeId = probeId,
+                        sipStatus = sipStatus,
+                        inviteMs = inviteMs,
+                        prMs = prMs,
+                        responseReceivedAtMillis = responseReceivedAtMillis
                     )
                     "\n[Google Geolocation] 查詢失敗：${error.message ?: error}"
                 }
@@ -772,7 +807,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         payloadUsed: List<CellTowerParams>,
         deltaMs: Long?,
         geolocationStatus: String,
-        geolocationError: String?
+        geolocationError: String?,
+        probeId: String,
+        sipStatus: Int,
+        inviteMs: Long,
+        prMs: Long,
+        responseReceivedAtMillis: Long
     ) {
         val victimKey = currentVictimFromList(assets.workDir)
             .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
@@ -781,6 +821,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val movingSnapshot = isMoving
         val activeSessionSnapshot = activeExperimentSessionDbId
         val activeProbeRunIdSnapshot = activeProbeRun?.dbId
+        val network = captureProbeNetworkSnapshot(appContext, activeExperimentSessionId ?: "no-session")
         val entry = ProbeHistory(
             mcc = parsed.mcc,
             mnc = parsed.mnc,
@@ -827,10 +868,19 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                         moving = movingSnapshot,
                         deltaMs = deltaMs,
                         sampleType = "cell",
-                        sipStatus = null,
-                        inviteMs = null,
-                        prMs = null,
+                        sipStatus = sipStatus,
+                        inviteMs = inviteMs,
+                        prMs = prMs,
                         intercarrierCandidate = deltaMs?.let { isIntercarrierDelta(it) },
+                        probeId = probeId,
+                        inviteSentAtMillis = responseReceivedAtMillis - (deltaMs ?: 0L),
+                        responseReceivedAtMillis = responseReceivedAtMillis,
+                        outcome = if (geolocationStatus == "success") "success" else "response_geolocation_failed",
+                        intervalSincePreviousProbeMs = null,
+                        wifiRssiDbm = network.wifiRssiDbm,
+                        wifiFrequencyMhz = network.wifiFrequencyMhz,
+                        wifiLinkSpeedMbps = network.wifiLinkSpeedMbps,
+                        wifiBssidHash = network.wifiBssidHash,
                         createdAtMillis = recordedAtMillis
                     )
                 )
@@ -850,6 +900,9 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
             .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
         val recordedAtMillis = System.currentTimeMillis()
         val movingSnapshot = isMoving
+        val previousResponse = lastRecordedProbeResponseAtMillis.getAndSet(recordedAtMillis)
+        val intervalSincePrevious = previousResponse.takeIf { it > 0 }?.let { recordedAtMillis - it }
+        val network = captureProbeNetworkSnapshot(appContext, activeExperimentSessionId ?: "no-session")
 
         withContext(Dispatchers.IO) {
             db.experimentDao().insertSample(
@@ -875,6 +928,15 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
                     inviteMs = inviteMs,
                     prMs = prMs,
                     intercarrierCandidate = isIntercarrierDelta(deltaMs),
+                    probeId = inviteMs?.let { "invite-$it" },
+                    inviteSentAtMillis = recordedAtMillis - deltaMs,
+                    responseReceivedAtMillis = recordedAtMillis,
+                    outcome = "success",
+                    intervalSincePreviousProbeMs = intervalSincePrevious,
+                    wifiRssiDbm = network.wifiRssiDbm,
+                    wifiFrequencyMhz = network.wifiFrequencyMhz,
+                    wifiLinkSpeedMbps = network.wifiLinkSpeedMbps,
+                    wifiBssidHash = network.wifiBssidHash,
                     createdAtMillis = recordedAtMillis
                 )
             )
@@ -945,7 +1007,10 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private fun buildProbeCommand(assets: ProbeAssets): String {
-        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r -d --verbose 1"
+        val responseLimitArgument = sessionProgressResponseLimit
+            ?.let { " --session-progress-response-limit $it" }
+            .orEmpty()
+        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r -d --verbose 1$responseLimitArgument"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {

@@ -15,6 +15,10 @@ import androidx.room.PrimaryKey
 data class ExperimentSessionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val sessionId: String,
+    val experimentId: String? = null,
+    val clockOffsetMs: Long? = null,
+    val clockUncertaintyMs: Long? = null,
+    val clockMeasuredAtMillis: Long? = null,
     val startedAtMillis: Long,
     val endedAtMillis: Long?,
     val createdAtMillis: Long,

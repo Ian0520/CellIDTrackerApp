@@ -58,6 +58,8 @@ fun ProbeTabContent(
     onAutoRestartProbeChange: (Boolean) -> Unit,
     probeIntervalSeconds: Int,
     onProbeIntervalSecondsChange: (Int) -> Unit,
+    sessionProgressResponseLimit: Int?,
+    onSessionProgressResponseLimitChange: (Int?) -> Unit,
     onSetVictimNumber: () -> Unit,
     isRootRunning: Boolean,
     isIntercarrierRunning: Boolean,
@@ -91,7 +93,7 @@ fun ProbeTabContent(
                 Text("Experiment Session", style = MaterialTheme.typography.titleMedium)
                 if (activeExperimentSessionId == null) {
                     Text(
-                        "No active session. Start one before probing to collect experiment samples.",
+                        "Start a session to generate an automatic date-time ID and collect experiment samples.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -228,6 +230,36 @@ fun ProbeTabContent(
                     )
                 }
 
+                Text(
+                    "183 responses before rollover",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "The count includes the first 183. Carrier default is CHT 6, TWM/FET 4.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    FilterChip(
+                        selected = sessionProgressResponseLimit == null,
+                        onClick = { onSessionProgressResponseLimitChange(null) },
+                        enabled = !isRootRunning && !isIntercarrierRunning,
+                        label = { Text("Carrier default") }
+                    )
+                    (1..6).forEach { responseCount ->
+                        FilterChip(
+                            selected = sessionProgressResponseLimit == responseCount,
+                            onClick = { onSessionProgressResponseLimitChange(responseCount) },
+                            enabled = !isRootRunning && !isIntercarrierRunning,
+                            label = { Text(responseCount.toString()) }
+                        )
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -236,10 +268,22 @@ fun ProbeTabContent(
                     Switch(checked = autoRestartProbe, onCheckedChange = onAutoRestartProbeChange)
                 }
 
+                Text("Minimum interval between INVITEs", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "0s sends the next INVITE as soon as the previous transaction is terminated.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    FilterChip(
+                        selected = probeIntervalSeconds == 0,
+                        onClick = { onProbeIntervalSecondsChange(0) },
+                        enabled = !isRootRunning && !isIntercarrierRunning,
+                        label = { Text("0s") }
+                    )
                     FilterChip(
                         selected = probeIntervalSeconds == 30,
                         onClick = { onProbeIntervalSecondsChange(30) },

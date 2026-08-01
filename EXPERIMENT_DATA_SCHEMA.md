@@ -19,13 +19,13 @@ Top-level JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schemaVersion` | int | Currently `2` |
+| `schemaVersion` | int | Currently `3` |
 | `appType` | string | `"probe"` |
 | `appName` | string | App label |
 | `appPackage` | string | Package name |
 | `appVersionName` | string | App version name |
 | `deviceIdentifier` | string or null | `manufacturer_model_device` |
-| `sessionId` | string | Probe session UUID |
+| `sessionId` | string | Auto-generated timestamp ID (`yyyyMMdd_HHmmss_SSS`) |
 | `startedAtMillis` | long | Unix epoch milliseconds |
 | `endedAtMillis` | long or null | Unix epoch milliseconds |
 | `exportedAtMillis` | long | Unix epoch milliseconds |
@@ -54,6 +54,15 @@ Each item in `samples`:
 | `inviteMs` | long or null | Native steady-clock timestamp for INVITE send time, from `[intercarrier] invite=...` |
 | `prMs` | long or null | Native steady-clock timestamp for first provisional response, from `[intercarrier] pr=...` |
 | `intercarrierCandidate` | boolean or null | App threshold classification for delta-only analysis; currently `true` when `deltaMs <= 525` |
+| `probeId` | string or null | Native SIP Call-ID for structured events or INVITE-based ID for delta-only events |
+| `inviteSentAtMillis` | long or null | Probe-device Unix estimate of INVITE transmission |
+| `responseReceivedAtMillis` | long or null | Unix time when the provisional event reached the app |
+| `outcome` | string or null | Probe result such as `success` or `response_geolocation_failed` |
+| `intervalSincePreviousProbeMs` | long or null | Actual interval between provisional-response events |
+| `wifiRssiDbm` | int or null | Probe-side Wi-Fi RSSI |
+| `wifiFrequencyMhz` | int or null | Probe-side Wi-Fi frequency |
+| `wifiLinkSpeedMbps` | int or null | Probe-side negotiated link speed |
+| `wifiBssidHash` | string or null | Session-salted truncated BSSID hash |
 | `moving` | boolean | Manual UI toggle snapshot (not GPS-derived) |
 
 `towersJson` string decodes to array of objects:
@@ -98,9 +107,11 @@ Top-level JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schemaVersion` | int | Currently `2` |
+| `schemaVersion` | int | Currently `4`; the complete schema is documented in `LocationData/README.md` |
 | `appType` | string | `"ground_truth"` |
 | `sessionId` | string | Auto-generated timestamp ID (`yyyyMMdd_HHmmss_SSS`) |
+| `experimentId` | string | Shared cross-phone experiment identifier |
+| `scenarioId` | string | Manual experiment condition |
 | `startedAtMillis` | long | Unix epoch milliseconds |
 | `endedAtMillis` | long | Unix epoch milliseconds |
 | `appName` | string | App label |
@@ -109,6 +120,9 @@ Top-level JSON object:
 | `appVersionCode` | long | Version code |
 | `device` | object | Device metadata |
 | `samples` | array | 1 Hz-ish location samples |
+| `clockSync` | object | Synchronization metadata; null offset means synchronization was not measured |
+| `captureConfig` | object | Sampling intervals, debounce threshold, and screen policy |
+| `manualEvents` | array | Timestamped manual phase labels such as `walking_start` or `vehicle_start` |
 
 `device` object fields:
 - `manufacturer` (string)
@@ -144,6 +158,11 @@ Each item in `samples`:
 | `millisSinceServingCellChange` | long or null | Milliseconds since last confirmed serving-cell change |
 | `movementClass` | string | One of classes below |
 | `movementSource` | string | Currently `"auto"` |
+| `servingCellTransitionType` | string or null | Same-area cell/sector, tracking-area, RAT, or PLMN change |
+| `servingCellPreviousKey` / `servingCellNewKey` | string or null | Old and new cell keys for a confirmed transition |
+| `servingCellFirstObservedAtMillis` | long or null | First observation of the candidate new cell |
+| `servingCellConfirmedAtMillis` | long or null | Debounce confirmation time |
+| `servingCellDebounceDelayMillis` | long or null | Confirmation delay caused by debounce |
 
 `movementClass` mapping from `speedMps`:
 - `stationary`: `< 0.5`
@@ -151,6 +170,8 @@ Each item in `samples`:
 - `medium_move`: `1.8 .. < 4.5`
 - `fast_move`: `>= 4.5`
 - `unknown`: speed unavailable
+
+Schema 4 additionally stores nested serving/neighbor cell measurements, signal metrics, registration/service state, Activity Recognition, location quality, battery/power state, and active network context.
 
 Serving-cell change detection:
 - Debounce threshold is 2 consecutive samples on the same new `servingCellObservedKey`.
@@ -186,8 +207,8 @@ These fields are directly comparable across files.
 
 ### 3.3 Session ID caution
 
-- Probe `sessionId` and ground-truth `sessionId` are generated independently (both timestamp-based in each app).
-- Do not assume they match by default; rely on time alignment unless IDs were coordinated.
+- Probe `sessionId` and ground-truth `sessionId` are generated independently as timestamp-based filenames.
+- Pair files using experiment notes and matching start times, then align individual records by wall time.
 
 ---
 

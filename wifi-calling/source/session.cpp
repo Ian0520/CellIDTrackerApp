@@ -150,7 +150,17 @@ void Session::run(ESPConfig&& cfg, Application& application) {
 
 
   auto carrierName = util::context.configFolder.substr(util::context.configFolder.size() - 3);
-  state.maxSessionProgressOfCarrier = getMaxSessionProgressOfCarrier(carrierName).value_or(0);
+  const int carrierDefault = getMaxSessionProgressOfCarrier(carrierName).value_or(1);
+  state.maxSessionProgressOfCarrier = util::context.sessionProgressResponseLimit > 0
+    ? util::context.sessionProgressResponseLimit
+    : carrierDefault;
+  std::cout << "183 responses before rollover, " << state.maxSessionProgressOfCarrier;
+  if (util::context.sessionProgressResponseLimit == 0) {
+    std::cout << " (carrier default)";
+  } else {
+    std::cout << " (app override)";
+  }
+  std::cout << std::endl;
 
 
   std::cout << "\nReady to run attacks\n" << std::endl;
