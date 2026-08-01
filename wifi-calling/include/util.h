@@ -31,6 +31,8 @@ namespace util {
     bool unavailabilityEval = false;
     bool detectEval = false;
     int probeIntervalSeconds = 30;
+    // Zero keeps the empirically determined per-carrier default.
+    int sessionProgressResponseLimit = 0;
   };
 
   extern Context context;

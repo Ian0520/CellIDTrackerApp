@@ -119,6 +119,8 @@ class MainActivity : ComponentActivity() {
                                 onAutoRestartProbeChange = viewModel::onAutoRestartProbeChange,
                                 probeIntervalSeconds = viewModel.probeIntervalSeconds,
                                 onProbeIntervalSecondsChange = viewModel::onProbeIntervalSecondsChange,
+                                sessionProgressResponseLimit = viewModel.sessionProgressResponseLimit,
+                                onSessionProgressResponseLimitChange = viewModel::onSessionProgressResponseLimitChange,
                                 onSetVictimNumber = viewModel::setVictimNumber,
                                 isRootRunning = viewModel.isRootRunning,
                                 isIntercarrierRunning = viewModel.isIntercarrierRunning,

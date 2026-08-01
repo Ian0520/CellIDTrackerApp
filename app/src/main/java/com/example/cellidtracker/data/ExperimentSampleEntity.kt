@@ -44,5 +44,14 @@ data class ExperimentSampleEntity(
     val inviteMs: Long?,
     val prMs: Long?,
     val intercarrierCandidate: Boolean?,
+    val probeId: String? = null,
+    val inviteSentAtMillis: Long? = null,
+    val responseReceivedAtMillis: Long? = null,
+    val outcome: String? = null,
+    val intervalSincePreviousProbeMs: Long? = null,
+    val wifiRssiDbm: Int? = null,
+    val wifiFrequencyMhz: Int? = null,
+    val wifiLinkSpeedMbps: Int? = null,
+    val wifiBssidHash: String? = null,
     val createdAtMillis: Long
 )

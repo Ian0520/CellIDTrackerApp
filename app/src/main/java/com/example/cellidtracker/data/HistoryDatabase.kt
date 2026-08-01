@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ExperimentSampleEntity::class,
         ProbeRunEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = true
 )
 abstract class HistoryDatabase : RoomDatabase() {
@@ -43,7 +43,8 @@ abstract class HistoryDatabase : RoomDatabase() {
                         MIGRATION_6_7,
                         MIGRATION_7_8,
                         MIGRATION_8_9,
-                        MIGRATION_9_10
+                        MIGRATION_9_10,
+                        MIGRATION_10_11
                     )
                     .build().also { INSTANCE = it }
             }
@@ -249,6 +250,24 @@ abstract class HistoryDatabase : RoomDatabase() {
                 database.execSQL("ALTER TABLE experiment_samples ADD COLUMN inviteMs INTEGER")
                 database.execSQL("ALTER TABLE experiment_samples ADD COLUMN prMs INTEGER")
                 database.execSQL("ALTER TABLE experiment_samples ADD COLUMN intercarrierCandidate INTEGER")
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE experiment_sessions ADD COLUMN experimentId TEXT")
+                database.execSQL("ALTER TABLE experiment_sessions ADD COLUMN clockOffsetMs INTEGER")
+                database.execSQL("ALTER TABLE experiment_sessions ADD COLUMN clockUncertaintyMs INTEGER")
+                database.execSQL("ALTER TABLE experiment_sessions ADD COLUMN clockMeasuredAtMillis INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN probeId TEXT")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN inviteSentAtMillis INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN responseReceivedAtMillis INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN outcome TEXT")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN intervalSincePreviousProbeMs INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN wifiRssiDbm INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN wifiFrequencyMhz INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN wifiLinkSpeedMbps INTEGER")
+                database.execSQL("ALTER TABLE experiment_samples ADD COLUMN wifiBssidHash TEXT")
             }
         }
     }

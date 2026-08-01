@@ -27,9 +27,18 @@ int readProbeIntervalSeconds() {
   if (raw == nullptr) return 30;
   char* end = nullptr;
   const long parsed = std::strtol(raw, &end, 10);
-  if (end == raw || parsed <= 0) return 30;
-  if (parsed <= 45) return 30;
-  return 60;
+  if (end == raw || *end != '\0') return 30;
+  switch (parsed) {
+    case 0:
+    case 5:
+    case 10:
+    case 20:
+    case 30:
+    case 60:
+      return static_cast<int>(parsed);
+    default:
+      return 30;
+  }
 }
 }
 
@@ -45,6 +54,7 @@ int main(int argc, char* argv[]) {
     ("u,unavailability-eval", "Evaluate one call unavailability", cxxopts::value<bool>()->default_value("false"))
     ("d,detect-eval", "Evaluate one call detect", cxxopts::value<bool>()->default_value("false"))
     ("e,enable-input", "Enable manual input of phone numbers", cxxopts::value<bool>()->default_value("false"))
+    ("session-progress-response-limit", "Received 183 responses before probe rollover; 0 uses carrier default", cxxopts::value<int>()->default_value("0"))
     ("v,verbose", "Verbose output", cxxopts::value<int>()->default_value("1"))
     ("h,help", "Help", cxxopts::value<bool>());
   // clang-format on
@@ -67,6 +77,11 @@ int main(int argc, char* argv[]) {
   util::context.unavailabilityEval = result["unavailability-eval"].as<bool>();
   util::context.detectEval = result["detect-eval"].as<bool>();
   util::context.probeIntervalSeconds = readProbeIntervalSeconds();
+  util::context.sessionProgressResponseLimit = result["session-progress-response-limit"].as<int>();
+  if (util::context.sessionProgressResponseLimit < 0 || util::context.sessionProgressResponseLimit > 20) {
+    std::cerr << "Session progress response limit must be between 0 and 20" << std::endl;
+    exit(EXIT_FAILURE);
+  }
 
   util::context.verbose = result["verbose"].as<int>();
   util::context.calleeId = createVictimList(result["enable-input"].as<bool>());
