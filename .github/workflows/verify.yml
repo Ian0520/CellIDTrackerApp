@@ -52,6 +52,20 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Prepare Gradle distribution
+        run: |
+          for attempt in 1 2 3; do
+            if ./gradlew --version; then
+              exit 0
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "Gradle distribution download failed after $attempt attempts." >&2
+              exit 1
+            fi
+            sleep_seconds=$((attempt * 10))
+            echo "Gradle download failed; retrying in ${sleep_seconds}s..." >&2
+            sleep "$sleep_seconds"
+          done
       - name: Run database migration tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
