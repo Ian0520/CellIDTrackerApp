@@ -31,9 +31,12 @@ jobs:
       NDK_VERSION: 25.2.9519653
     steps:
       - uses: actions/checkout@v4
-      - uses: android-actions/setup-android@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - name: Install native toolchain
-        run: sdkmanager "ndk;$NDK_VERSION"
+        run: "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
       - name: Verify packaged artifact
         run: ./scripts/verify-native-artifact.sh
       - name: Compile native probe
