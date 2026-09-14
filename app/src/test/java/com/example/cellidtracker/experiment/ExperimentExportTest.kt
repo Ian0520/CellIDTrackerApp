@@ -35,6 +35,15 @@ class ExperimentExportTest {
                     inviteMs = 100,
                     prMs = 800,
                     intercarrierCandidate = false,
+                    probeId = "call-1",
+                    inviteSentAtMillis = 1300,
+                    responseReceivedAtMillis = 2000,
+                    outcome = "success",
+                    intervalSincePreviousProbeMs = 30_000,
+                    wifiRssiDbm = -61,
+                    wifiFrequencyMhz = 5180,
+                    wifiLinkSpeedMbps = 433,
+                    wifiBssidHash = "bssid-hash",
                     createdAtMillis = 2000
                 )
             ),
@@ -47,7 +56,7 @@ class ExperimentExportTest {
             )
         )
 
-        assertEquals(2, payload.schemaVersion)
+        assertEquals(3, payload.schemaVersion)
         assertEquals("probe", payload.appType)
         assertEquals("session-11", payload.sessionId)
         assertEquals(1000L, payload.startedAtMillis)
@@ -74,6 +83,15 @@ class ExperimentExportTest {
         assertEquals(100L, sample.inviteMs)
         assertEquals(800L, sample.prMs)
         assertEquals(false, sample.intercarrierCandidate)
+        assertEquals("call-1", sample.probeId)
+        assertEquals(1300L, sample.inviteSentAtMillis)
+        assertEquals(2000L, sample.responseReceivedAtMillis)
+        assertEquals("success", sample.outcome)
+        assertEquals(30_000L, sample.intervalSincePreviousProbeMs)
+        assertEquals(-61, sample.wifiRssiDbm)
+        assertEquals(5180, sample.wifiFrequencyMhz)
+        assertEquals(433, sample.wifiLinkSpeedMbps)
+        assertEquals("bssid-hash", sample.wifiBssidHash)
     }
 
     @Test
