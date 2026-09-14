@@ -1,21 +1,72 @@
-# Android build
-/build/
+# Gradle, Android, and native build output
 .gradle/
+.kotlin/
+**/build/
+**/.cxx/
+.externalNativeBuild/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+compile_commands.json
+.ninja_deps
+.ninja_log
+/wifi-calling/bin/
+/wifi-calling/cpm_modules/
+*.apk
+*.aab
+*.apks
+
+# Local SDK and IDE state
 local.properties
-
-# Android Studio
 .idea/
-*.iml
-
-# NDK build
-app/.cxx/
-app/build/
-
-# Logs
-*.log
-
-# Generated analysis/export artifacts
-geolocation_combo_report_*.json
-probe_history.json
-
 .vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Credentials and signing material
+.env
+.env.*
+!.env.example
+!.env.sample
+secrets.properties
+keystore.properties
+signing.properties
+google-services.json
+service-account*.json
+credentials*.json
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+
+# Device-specific runtime input
+/wifi-calling/victim_list
+
+# Captures, device exports, and collected experiment data
+/data/
+/captures/
+/exports/
+/device-backups/
+experiment_sessions/
+probe_history*.json
+geolocation_combo_report_*.json
+paging_times*.csv
+probe_time_cdf*.txt
+*.pcap
+*.pcapng
+*.cap
+*.ab
+
+# Logs, crash dumps, and temporary files
+*.log
+*.hprof
+*.trace
+hs_err_pid*
+core
+core.*
+*.tmp
+*.swp
+*~
