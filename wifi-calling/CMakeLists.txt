@@ -34,6 +34,7 @@ CPMAddPackage(
     NAME mbedtls
     GITHUB_REPOSITORY "ARMmbed/mbedtls"
     GIT_TAG "v3.1.0"
+    GIT_SHALLOW TRUE
     OPTIONS
         "ENABLE_PROGRAMS OFF"
         "ENABLE_TESTING OFF"
@@ -47,6 +48,7 @@ CPMAddPackage(
     NAME curl
     GITHUB_REPOSITORY "curl/curl"
     GIT_TAG "curl-7_82_0"
+    GIT_SHALLOW TRUE
     OPTIONS
         "CMAKE_USE_LIBSSH2 OFF"
         "CURL_USE_MBEDTLS ON"
@@ -55,7 +57,13 @@ CPMAddPackage(
         "BUILD_TESTING OFF"
 )
 
-CPMAddPackage("gh:nlohmann/json@3.11.3") # see https://json.nlohmann.me/integration/package_managers/#cpmcmake
+CPMAddPackage(
+    NAME json
+    GITHUB_REPOSITORY "nlohmann/json"
+    GIT_TAG "v3.11.3"
+    GIT_SHALLOW TRUE
+    OPTIONS "JSON_BuildTests OFF"
+)
 
 # ---- Add source files ----
 
