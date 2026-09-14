@@ -1,0 +1,812 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 12,
+    "identityHash": "a003b63a26b8cd401404642567d19592",
+    "entities": [
+      {
+        "tableName": "probe_history",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `victim` TEXT NOT NULL, `mcc` INTEGER NOT NULL, `mnc` INTEGER NOT NULL, `lac` INTEGER NOT NULL, `cid` INTEGER NOT NULL, `lat` REAL, `lon` REAL, `accuracy` REAL, `timestampMillis` INTEGER NOT NULL, `towersCount` INTEGER NOT NULL, `towersJson` TEXT NOT NULL, `moving` INTEGER NOT NULL, `deltaMs` INTEGER, `probeRunId` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "victim",
+            "columnName": "victim",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mcc",
+            "columnName": "mcc",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mnc",
+            "columnName": "mnc",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lac",
+            "columnName": "lac",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cid",
+            "columnName": "cid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lat",
+            "columnName": "lat",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lon",
+            "columnName": "lon",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "accuracy",
+            "columnName": "accuracy",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "timestampMillis",
+            "columnName": "timestampMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "towersCount",
+            "columnName": "towersCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "towersJson",
+            "columnName": "towersJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "moving",
+            "columnName": "moving",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deltaMs",
+            "columnName": "deltaMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "probeRunId",
+            "columnName": "probeRunId",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "experiment_sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionId` TEXT NOT NULL, `experimentId` TEXT, `clockOffsetMs` INTEGER, `clockUncertaintyMs` INTEGER, `clockMeasuredAtMillis` INTEGER, `startedAtMillis` INTEGER NOT NULL, `endedAtMillis` INTEGER, `createdAtMillis` INTEGER NOT NULL, `exportedAtMillis` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "sessionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "experimentId",
+            "columnName": "experimentId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "clockOffsetMs",
+            "columnName": "clockOffsetMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "clockUncertaintyMs",
+            "columnName": "clockUncertaintyMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "clockMeasuredAtMillis",
+            "columnName": "clockMeasuredAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startedAtMillis",
+            "columnName": "startedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endedAtMillis",
+            "columnName": "endedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "exportedAtMillis",
+            "columnName": "exportedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_experiment_sessions_sessionId",
+            "unique": true,
+            "columnNames": [
+              "sessionId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_experiment_sessions_sessionId` ON `${TABLE_NAME}` (`sessionId`)"
+          },
+          {
+            "name": "index_experiment_sessions_endedAtMillis",
+            "unique": false,
+            "columnNames": [
+              "endedAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_experiment_sessions_endedAtMillis` ON `${TABLE_NAME}` (`endedAtMillis`)"
+          },
+          {
+            "name": "index_experiment_sessions_startedAtMillis",
+            "unique": false,
+            "columnNames": [
+              "startedAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_experiment_sessions_startedAtMillis` ON `${TABLE_NAME}` (`startedAtMillis`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "experiment_samples",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionDbId` INTEGER NOT NULL, `recordedAtMillis` INTEGER NOT NULL, `victim` TEXT NOT NULL, `mcc` INTEGER NOT NULL, `mnc` INTEGER NOT NULL, `lac` INTEGER NOT NULL, `cid` INTEGER NOT NULL, `estimatedLat` REAL, `estimatedLon` REAL, `estimatedAccuracyM` REAL, `geolocationStatus` TEXT NOT NULL, `geolocationError` TEXT, `towersCount` INTEGER NOT NULL, `towersJson` TEXT NOT NULL, `moving` INTEGER NOT NULL, `deltaMs` INTEGER, `sampleType` TEXT NOT NULL DEFAULT 'cell', `sipStatus` INTEGER, `inviteMs` INTEGER, `prMs` INTEGER, `intercarrierCandidate` INTEGER, `probeId` TEXT, `inviteSentAtMillis` INTEGER, `responseReceivedAtMillis` INTEGER, `outcome` TEXT, `intervalSincePreviousProbeMs` INTEGER, `wifiRssiDbm` INTEGER, `wifiFrequencyMhz` INTEGER, `wifiLinkSpeedMbps` INTEGER, `wifiBssidHash` TEXT, `createdAtMillis` INTEGER NOT NULL, FOREIGN KEY(`sessionDbId`) REFERENCES `experiment_sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionDbId",
+            "columnName": "sessionDbId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedAtMillis",
+            "columnName": "recordedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "victim",
+            "columnName": "victim",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mcc",
+            "columnName": "mcc",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mnc",
+            "columnName": "mnc",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lac",
+            "columnName": "lac",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cid",
+            "columnName": "cid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "estimatedLat",
+            "columnName": "estimatedLat",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estimatedLon",
+            "columnName": "estimatedLon",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estimatedAccuracyM",
+            "columnName": "estimatedAccuracyM",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "geolocationStatus",
+            "columnName": "geolocationStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "geolocationError",
+            "columnName": "geolocationError",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "towersCount",
+            "columnName": "towersCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "towersJson",
+            "columnName": "towersJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "moving",
+            "columnName": "moving",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deltaMs",
+            "columnName": "deltaMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sampleType",
+            "columnName": "sampleType",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'cell'"
+          },
+          {
+            "fieldPath": "sipStatus",
+            "columnName": "sipStatus",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "inviteMs",
+            "columnName": "inviteMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "prMs",
+            "columnName": "prMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "intercarrierCandidate",
+            "columnName": "intercarrierCandidate",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "probeId",
+            "columnName": "probeId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "inviteSentAtMillis",
+            "columnName": "inviteSentAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "responseReceivedAtMillis",
+            "columnName": "responseReceivedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "intervalSincePreviousProbeMs",
+            "columnName": "intervalSincePreviousProbeMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiRssiDbm",
+            "columnName": "wifiRssiDbm",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiFrequencyMhz",
+            "columnName": "wifiFrequencyMhz",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiLinkSpeedMbps",
+            "columnName": "wifiLinkSpeedMbps",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiBssidHash",
+            "columnName": "wifiBssidHash",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_experiment_samples_sessionDbId",
+            "unique": false,
+            "columnNames": [
+              "sessionDbId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_experiment_samples_sessionDbId` ON `${TABLE_NAME}` (`sessionDbId`)"
+          },
+          {
+            "name": "index_experiment_samples_recordedAtMillis",
+            "unique": false,
+            "columnNames": [
+              "recordedAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_experiment_samples_recordedAtMillis` ON `${TABLE_NAME}` (`recordedAtMillis`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "experiment_sessions",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sessionDbId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "probe_runs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `victim` TEXT NOT NULL, `mode` TEXT NOT NULL, `startedAtMillis` INTEGER NOT NULL, `endedAtMillis` INTEGER, `exitCode` INTEGER, `stoppedByUser` INTEGER NOT NULL, `createdAtMillis` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "victim",
+            "columnName": "victim",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mode",
+            "columnName": "mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAtMillis",
+            "columnName": "startedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endedAtMillis",
+            "columnName": "endedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "exitCode",
+            "columnName": "exitCode",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "stoppedByUser",
+            "columnName": "stoppedByUser",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_probe_runs_victim",
+            "unique": false,
+            "columnNames": [
+              "victim"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_probe_runs_victim` ON `${TABLE_NAME}` (`victim`)"
+          },
+          {
+            "name": "index_probe_runs_startedAtMillis",
+            "unique": false,
+            "columnNames": [
+              "startedAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_probe_runs_startedAtMillis` ON `${TABLE_NAME}` (`startedAtMillis`)"
+          },
+          {
+            "name": "index_probe_runs_endedAtMillis",
+            "unique": false,
+            "columnNames": [
+              "endedAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_probe_runs_endedAtMillis` ON `${TABLE_NAME}` (`endedAtMillis`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "probe_attempts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attemptKey` TEXT NOT NULL, `attemptId` TEXT NOT NULL, `contractVersion` INTEGER NOT NULL, `sessionDbId` INTEGER NOT NULL, `probeRunId` INTEGER, `victim` TEXT NOT NULL, `moving` INTEGER NOT NULL, `inviteElapsedMs` INTEGER, `inviteSentAtMillis` INTEGER, `responseElapsedMs` INTEGER, `responseReceivedAtMillis` INTEGER, `sipStatus` INTEGER, `deltaMs` INTEGER, `mcc` INTEGER, `mnc` INTEGER, `lac` INTEGER, `cid` INTEGER, `estimatedLat` REAL, `estimatedLon` REAL, `estimatedAccuracyM` REAL, `geolocationStatus` TEXT NOT NULL, `geolocationError` TEXT, `towersCount` INTEGER NOT NULL, `towersJson` TEXT NOT NULL, `intercarrierCandidate` INTEGER, `intervalSincePreviousProbeMs` INTEGER, `wifiRssiDbm` INTEGER, `wifiFrequencyMhz` INTEGER, `wifiLinkSpeedMbps` INTEGER, `wifiBssidHash` TEXT, `finishedAtMillis` INTEGER, `outcome` TEXT NOT NULL, `finishReason` TEXT, `createdAtMillis` INTEGER NOT NULL, `updatedAtMillis` INTEGER NOT NULL, PRIMARY KEY(`attemptKey`), FOREIGN KEY(`sessionDbId`) REFERENCES `experiment_sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "attemptKey",
+            "columnName": "attemptKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptId",
+            "columnName": "attemptId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contractVersion",
+            "columnName": "contractVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionDbId",
+            "columnName": "sessionDbId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "probeRunId",
+            "columnName": "probeRunId",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "victim",
+            "columnName": "victim",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "moving",
+            "columnName": "moving",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inviteElapsedMs",
+            "columnName": "inviteElapsedMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "inviteSentAtMillis",
+            "columnName": "inviteSentAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "responseElapsedMs",
+            "columnName": "responseElapsedMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "responseReceivedAtMillis",
+            "columnName": "responseReceivedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sipStatus",
+            "columnName": "sipStatus",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deltaMs",
+            "columnName": "deltaMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "mcc",
+            "columnName": "mcc",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "mnc",
+            "columnName": "mnc",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lac",
+            "columnName": "lac",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "cid",
+            "columnName": "cid",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estimatedLat",
+            "columnName": "estimatedLat",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estimatedLon",
+            "columnName": "estimatedLon",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estimatedAccuracyM",
+            "columnName": "estimatedAccuracyM",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "geolocationStatus",
+            "columnName": "geolocationStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "geolocationError",
+            "columnName": "geolocationError",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "towersCount",
+            "columnName": "towersCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "towersJson",
+            "columnName": "towersJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "intercarrierCandidate",
+            "columnName": "intercarrierCandidate",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "intervalSincePreviousProbeMs",
+            "columnName": "intervalSincePreviousProbeMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiRssiDbm",
+            "columnName": "wifiRssiDbm",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiFrequencyMhz",
+            "columnName": "wifiFrequencyMhz",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiLinkSpeedMbps",
+            "columnName": "wifiLinkSpeedMbps",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "wifiBssidHash",
+            "columnName": "wifiBssidHash",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "finishedAtMillis",
+            "columnName": "finishedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finishReason",
+            "columnName": "finishReason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "attemptKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_probe_attempts_sessionDbId",
+            "unique": false,
+            "columnNames": [
+              "sessionDbId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_probe_attempts_sessionDbId` ON `${TABLE_NAME}` (`sessionDbId`)"
+          },
+          {
+            "name": "index_probe_attempts_inviteSentAtMillis",
+            "unique": false,
+            "columnNames": [
+              "inviteSentAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_probe_attempts_inviteSentAtMillis` ON `${TABLE_NAME}` (`inviteSentAtMillis`)"
+          },
+          {
+            "name": "index_probe_attempts_responseReceivedAtMillis",
+            "unique": false,
+            "columnNames": [
+              "responseReceivedAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_probe_attempts_responseReceivedAtMillis` ON `${TABLE_NAME}` (`responseReceivedAtMillis`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "experiment_sessions",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sessionDbId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a003b63a26b8cd401404642567d19592')"
+    ]
+  }
+}

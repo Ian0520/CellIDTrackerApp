@@ -10,6 +10,7 @@
 #include <cerrno>
 
 #include "application.h"
+#include "probe_event.h"
 
 
 std::atomic<bool> timeToUpload{false};
@@ -64,15 +65,65 @@ void Application::prepareFreshInvite(SipMessage& sip) {
 }
 
 void Application::armInviteTiming(const std::string& invite) {
+  emitActiveAttemptFinished("next_invite");
   session.state.t_trying.reset();
   session.state.t_pr.reset();
-  session.state.t_invite = std::chrono::steady_clock::now();
-  session.state.activeInviteCallId = extractCallIdFromSip(invite);
-  session.state.activeInviteBranch = extractBranchFromSip(invite);
   session.state.retryCancelPending = false;
   session.state.retryInvitePending = false;
   session.state.probeEventEmitted = false;
+  session.state.attemptStartedEmitted = false;
+  session.state.attemptFinishedEmitted = false;
   session.state.firstProvisionalStatus = 0;
+  session.state.firstProvisionalUnixMs = 0;
+  session.state.inviteUnixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  session.state.t_invite = std::chrono::steady_clock::now();
+  session.state.activeInviteCallId = extractCallIdFromSip(invite);
+  session.state.activeInviteBranch = extractBranchFromSip(invite);
+}
+
+void Application::emitActiveAttemptStarted() {
+  auto& state = session.state;
+  if (!util::context.remoteCellIDProber ||
+      state.attemptStartedEmitted ||
+      state.activeInviteCallId.empty() ||
+      !state.t_invite.has_value()) {
+    return;
+  }
+
+  const auto inviteElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      state.t_invite->time_since_epoch()).count();
+  std::cout << probe_event::attemptStarted(
+      state.activeInviteCallId,
+      inviteElapsedMs,
+      state.inviteUnixMs) << std::endl;
+  state.attemptStartedEmitted = true;
+}
+
+void Application::emitActiveAttemptFinished(std::string_view reason) {
+  auto& state = session.state;
+  if (!util::context.remoteCellIDProber ||
+      state.attemptFinishedEmitted ||
+      state.activeInviteCallId.empty() ||
+      !state.t_invite.has_value()) {
+    return;
+  }
+
+  emitActiveAttemptStarted();
+  std::string_view outcome = "no_provisional";
+  if (state.probeEventEmitted) {
+    outcome = "cell_observed";
+  } else if (state.t_pr.has_value()) {
+    outcome = "provisional_without_cell";
+  }
+  const auto finishedUnixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  std::cout << probe_event::attemptFinished(
+      state.activeInviteCallId,
+      finishedUnixMs,
+      outcome,
+      reason) << std::endl;
+  state.attemptFinishedEmitted = true;
 }
 
 void Application::extractCellularInfo(const std::string& input, const std::string& phoneNumber) {
@@ -959,6 +1010,7 @@ void Application::CallDoS(pollfd& pfd, int nReady, const std::string& calleeId) 
     }
     nReady = poll(&pfd, 1, 5000);
   }
+  emitActiveAttemptFinished("probe_loop_ended");
 }
 
 void Application::CallDetect(pollfd& pfd, int nReady, const std::string& calleeId) {

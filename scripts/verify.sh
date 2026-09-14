@@ -6,6 +6,8 @@ cd "$repo_root"
 
 google_api_key="${GOOGLE_API_KEY:-phase0-verification-placeholder}"
 
+./scripts/test-native-contract.sh
+
 ./gradlew \
     :app:testDebugUnitTest \
     :app:lintDebug \

@@ -19,7 +19,7 @@ Top-level JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schemaVersion` | int | Currently `3` |
+| `schemaVersion` | int | Currently `4` |
 | `appType` | string | `"probe"` |
 | `appName` | string | App label |
 | `appPackage` | string | Package name |
@@ -29,13 +29,13 @@ Top-level JSON object:
 | `startedAtMillis` | long | Unix epoch milliseconds |
 | `endedAtMillis` | long or null | Unix epoch milliseconds |
 | `exportedAtMillis` | long | Unix epoch milliseconds |
-| `samples` | array | Per-probe sample records |
+| `samples` | array | One record per native INVITE attempt; legacy records remain exportable |
 
 Each item in `samples`:
 
 | Field | Type | Notes |
 |---|---|---|
-| `recordedAtMillis` | long | Time sample was recorded in app |
+| `recordedAtMillis` | long | Provisional-response time, falling back to INVITE or row creation time when no response exists |
 | `victim` | string | Victim key/number snapshot |
 | `mcc` | int | Parsed cell MCC |
 | `mnc` | int | Parsed cell MNC |
@@ -44,26 +44,29 @@ Each item in `samples`:
 | `estimatedLat` | double or null | Google Geolocation result |
 | `estimatedLon` | double or null | Google Geolocation result |
 | `estimatedAccuracyM` | double or null | Google Geolocation accuracy |
-| `geolocationStatus` | string | `"success"` or `"failure"` |
+| `geolocationStatus` | string | `"not_requested"`, `"pending"`, `"success"`, `"failure"`, or a legacy status |
 | `geolocationError` | string or null | Error message when failed |
 | `towersCount` | int | Number of towers sent to geolocation |
 | `towersJson` | string | JSON string (not array type) containing towers |
-| `deltaMs` | long or null | Parsed from native structured probe event (`[probe_event] ... delta_ms=...`) or delta-only provisional event (`[intercarrier] ... delta_ms=...`) |
-| `sampleType` | string | `"cell"` for geolocation/cell samples, `"delta"` for provisional delta-only samples |
+| `deltaMs` | long or null | Native monotonic duration from fresh INVITE to the first matching `180`/`183` |
+| `sampleType` | string | `"cell"`, `"delta"`, or `"attempt"` when no provisional response was received |
 | `sipStatus` | int or null | SIP provisional status for delta samples, usually `180` or `183`; may be null for older native logs |
-| `inviteMs` | long or null | Native steady-clock timestamp for INVITE send time, from `[intercarrier] invite=...` |
-| `prMs` | long or null | Native steady-clock timestamp for first provisional response, from `[intercarrier] pr=...` |
+| `inviteMs` | long or null | Native steady-clock timestamp for the fresh INVITE |
+| `prMs` | long or null | Native steady-clock timestamp for the first matching provisional response |
 | `intercarrierCandidate` | boolean or null | App threshold classification for delta-only analysis; currently `true` when `deltaMs <= 525` |
 | `probeId` | string or null | Native SIP Call-ID for structured events or INVITE-based ID for delta-only events |
-| `inviteSentAtMillis` | long or null | Probe-device Unix estimate of INVITE transmission |
-| `responseReceivedAtMillis` | long or null | Unix time when the provisional event reached the app |
-| `outcome` | string or null | Probe result such as `success` or `response_geolocation_failed` |
+| `inviteSentAtMillis` | long or null | Native probe-device Unix timestamp correlated with INVITE timing |
+| `responseReceivedAtMillis` | long or null | Native probe-device Unix timestamp correlated with the first provisional response |
+| `outcome` | string or null | Native attempt state such as `no_provisional`, `provisional_without_cell`, or `cell_observed` |
 | `intervalSincePreviousProbeMs` | long or null | Actual interval between provisional-response events |
 | `wifiRssiDbm` | int or null | Probe-side Wi-Fi RSSI |
 | `wifiFrequencyMhz` | int or null | Probe-side Wi-Fi frequency |
 | `wifiLinkSpeedMbps` | int or null | Probe-side negotiated link speed |
 | `wifiBssidHash` | string or null | Session-salted truncated BSSID hash |
 | `moving` | boolean | Manual UI toggle snapshot (not GPS-derived) |
+| `contractVersion` | int or null | `1` for structured attempt rows; null for migrated legacy records |
+| `finishedAtMillis` | long or null | Native Unix time when the attempt rolled over or the loop ended |
+| `finishReason` | string or null | Native closure reason such as `next_invite` or `probe_loop_ended` |
 
 `towersJson` string decodes to array of objects:
 - `mcc` (int)
@@ -88,9 +91,11 @@ Notes:
 ### 1.3 Probe-side semantics important for analysis
 
 - `moving` is operator input from app switch, not measured movement.
-- `deltaMs` may be `null` for legacy cell samples when no native `[probe_event]` line is available.
-- Delta-only samples use sentinel cell values `mcc=-1, mnc=-1, lac=-1, cid=-1`, `towersCount=0`, `towersJson="[]"`, and `geolocationStatus="delta_only"`.
-- The app uses native `call_id` from `[probe_event]` as the primary dedupe key to prevent duplicate history entries from repeated `183` retransmissions.
+- Schema-4 structured rows are stored in `probe_attempts`; older `experiment_samples` rows are preserved and merged into exports.
+- An attempt without a cell is exported with `mcc=-1, mnc=-1, lac=-1, cid=-1`, `towersCount=0`, and `towersJson="[]"` for backward-compatible analysis.
+- The app combines native Call-ID with the app probe-run ID for database identity. Repeated `180`/`183` responses update neither latency nor row count.
+- `deltaMs` must be analyzed directly. Do not subtract Unix timestamps to reconstruct latency.
+- The JSONL native contract and event ordering are defined in `docs/PROBE_EVENT_PROTOCOL.md`.
 
 ---
 

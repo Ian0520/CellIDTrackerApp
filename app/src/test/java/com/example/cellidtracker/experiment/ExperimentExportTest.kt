@@ -2,6 +2,7 @@ package com.example.cellidtracker.experiment
 
 import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
+import com.example.cellidtracker.data.ProbeAttemptEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -56,7 +57,7 @@ class ExperimentExportTest {
             )
         )
 
-        assertEquals(3, payload.schemaVersion)
+        assertEquals(4, payload.schemaVersion)
         assertEquals("probe", payload.appType)
         assertEquals("session-11", payload.sessionId)
         assertEquals(1000L, payload.startedAtMillis)
@@ -92,6 +93,71 @@ class ExperimentExportTest {
         assertEquals(5180, sample.wifiFrequencyMhz)
         assertEquals(433, sample.wifiLinkSpeedMbps)
         assertEquals("bssid-hash", sample.wifiBssidHash)
+        assertNull(sample.contractVersion)
+        assertNull(sample.finishReason)
+    }
+
+    @Test
+    fun structuredAttemptExportsAsOneCompleteSample() {
+        val payload = buildExperimentSessionExportPayload(
+            session = sampleSession(),
+            samples = emptyList(),
+            attempts = listOf(
+                ProbeAttemptEntity(
+                    attemptKey = "11:7:call-structured",
+                    attemptId = "call-structured",
+                    contractVersion = 1,
+                    sessionDbId = 11,
+                    probeRunId = 7,
+                    victim = "victim-a",
+                    moving = true,
+                    inviteElapsedMs = 100,
+                    inviteSentAtMillis = 1_300,
+                    responseElapsedMs = 800,
+                    responseReceivedAtMillis = 2_000,
+                    sipStatus = 183,
+                    deltaMs = 700,
+                    mcc = 466,
+                    mnc = 92,
+                    lac = 13_700,
+                    cid = 81_261_592,
+                    estimatedLat = 25.033,
+                    estimatedLon = 121.565,
+                    estimatedAccuracyM = 900.0,
+                    geolocationStatus = "success",
+                    geolocationError = null,
+                    towersCount = 1,
+                    towersJson = "[{\"cid\":81261592}]",
+                    intercarrierCandidate = false,
+                    intervalSincePreviousProbeMs = 30_000,
+                    wifiRssiDbm = -61,
+                    wifiFrequencyMhz = 5_180,
+                    wifiLinkSpeedMbps = 433,
+                    wifiBssidHash = "bssid-hash",
+                    finishedAtMillis = 2_500,
+                    outcome = "cell_observed",
+                    finishReason = "next_invite",
+                    createdAtMillis = 1_300,
+                    updatedAtMillis = 2_500
+                )
+            ),
+            exportedAtMillis = 3_000,
+            appInfo = ProbeExportAppInfo(
+                appName = "CellIDTracker",
+                appPackage = "com.example.cellidtracker",
+                appVersionName = "1.0",
+                deviceIdentifier = null
+            )
+        )
+
+        assertEquals(1, payload.samples.size)
+        val sample = payload.samples.single()
+        assertEquals("call-structured", sample.probeId)
+        assertEquals("cell", sample.sampleType)
+        assertEquals(1, sample.contractVersion)
+        assertEquals(700L, sample.deltaMs)
+        assertEquals(2_500L, sample.finishedAtMillis)
+        assertEquals("next_invite", sample.finishReason)
     }
 
     @Test

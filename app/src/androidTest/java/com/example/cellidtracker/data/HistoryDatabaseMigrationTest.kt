@@ -44,7 +44,7 @@ class HistoryDatabaseMigrationTest {
     }
 
     @Test
-    fun migration10To11PreservesExistingExperimentData() {
+    fun migration10To12PreservesExistingExperimentData() {
         createVersion10Database()
 
         database = Room.databaseBuilder(context, HistoryDatabase::class.java, TEST_DATABASE)
@@ -53,7 +53,7 @@ class HistoryDatabaseMigrationTest {
             .build()
 
         val migrated = requireNotNull(database).openHelper.writableDatabase
-        assertEquals(11, migrated.version)
+        assertEquals(12, migrated.version)
 
         migrated.query(
             "SELECT sessionId, startedAtMillis, experimentId, clockOffsetMs " +
@@ -77,11 +77,51 @@ class HistoryDatabaseMigrationTest {
             assertEquals(true, cursor.isNull(3))
             assertEquals(true, cursor.isNull(4))
         }
+
+        migrated.query("SELECT COUNT(*) FROM probe_attempts").use { cursor ->
+            check(cursor.moveToFirst())
+            assertEquals(0, cursor.getInt(0))
+        }
     }
 
     @Test
-    fun exportedVersion11SchemaCanBeCreated() {
-        migrationHelper.createDatabase(EXPORTED_SCHEMA_DATABASE, 11).close()
+    fun migration11To12CreatesAttemptTableWithoutChangingLegacyRows() {
+        migrationHelper.createDatabase(TEST_DATABASE, 11).apply {
+            execSQL(
+                """
+                INSERT INTO experiment_sessions (
+                    id, sessionId, startedAtMillis, endedAtMillis, createdAtMillis,
+                    exportedAtMillis, experimentId, clockOffsetMs,
+                    clockUncertaintyMs, clockMeasuredAtMillis
+                ) VALUES (
+                    31, '20260914_130000_000', 3000, 4000, 3000,
+                    NULL, NULL, NULL, NULL, NULL
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        database = Room.databaseBuilder(context, HistoryDatabase::class.java, TEST_DATABASE)
+            .addMigrations(*HistoryDatabase.ALL_MIGRATIONS)
+            .allowMainThreadQueries()
+            .build()
+
+        val migrated = requireNotNull(database).openHelper.writableDatabase
+        assertEquals(12, migrated.version)
+        migrated.query("SELECT sessionId FROM experiment_sessions WHERE id = 31").use { cursor ->
+            check(cursor.moveToFirst())
+            assertEquals("20260914_130000_000", cursor.getString(0))
+        }
+        migrated.query("SELECT COUNT(*) FROM probe_attempts").use { cursor ->
+            check(cursor.moveToFirst())
+            assertEquals(0, cursor.getInt(0))
+        }
+    }
+
+    @Test
+    fun exportedVersion12SchemaCanBeCreated() {
+        migrationHelper.createDatabase(EXPORTED_SCHEMA_DATABASE, 12).close()
     }
 
     private fun createVersion10Database() {

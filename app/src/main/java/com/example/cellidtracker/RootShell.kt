@@ -150,6 +150,11 @@ object RootShell {
         stdoutJob.join()
         stderrJob.join()
 
+        // Batch callbacks are posted asynchronously to the main looper. Queueing this
+        // barrier after both readers finish guarantees their final batches were handled
+        // before the caller closes any downstream event channel.
+        withContext(Dispatchers.Main) { }
+
         currentProcess = null
         exitCode
     }

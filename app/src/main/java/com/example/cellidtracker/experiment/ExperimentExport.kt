@@ -6,6 +6,7 @@ import com.example.cellidtracker.BuildConfig
 import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
+import com.example.cellidtracker.data.ProbeAttemptEntity
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -13,7 +14,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val PROBE_SESSION_EXPORT_SCHEMA_VERSION = 3
+private const val PROBE_SESSION_EXPORT_SCHEMA_VERSION = 4
 private const val PROBE_SESSION_EXPORT_APP_TYPE = "probe"
 
 data class ProbeExportAppInfo(
@@ -52,7 +53,10 @@ data class ProbeSessionSampleExportPayload(
     val wifiFrequencyMhz: Int?,
     val wifiLinkSpeedMbps: Int?,
     val wifiBssidHash: String?,
-    val moving: Boolean
+    val moving: Boolean,
+    val contractVersion: Int?,
+    val finishedAtMillis: Long?,
+    val finishReason: String?
 )
 
 data class ProbeSessionExportPayload(
@@ -72,10 +76,16 @@ data class ProbeSessionExportPayload(
 fun buildExperimentSessionExportPayload(
     session: ExperimentSessionEntity,
     samples: List<ExperimentSampleEntity>,
+    attempts: List<ProbeAttemptEntity> = emptyList(),
     exportedAtMillis: Long,
     appInfo: ProbeExportAppInfo
 ): ProbeSessionExportPayload {
-    val sortedSamples = samples.sortedWith(compareBy<ExperimentSampleEntity> { it.recordedAtMillis }.thenBy { it.id })
+    val legacyPayloads = samples.map { it.toExportPayload() }
+    val attemptPayloads = attempts.map { it.toExportPayload() }
+    val sortedSamples = (legacyPayloads + attemptPayloads).sortedWith(
+        compareBy<ProbeSessionSampleExportPayload> { it.recordedAtMillis }
+            .thenBy { it.probeId.orEmpty() }
+    )
 
     return ProbeSessionExportPayload(
         schemaVersion = PROBE_SESSION_EXPORT_SCHEMA_VERSION,
@@ -88,51 +98,21 @@ fun buildExperimentSessionExportPayload(
         startedAtMillis = session.startedAtMillis,
         endedAtMillis = session.endedAtMillis,
         exportedAtMillis = exportedAtMillis,
-        samples = sortedSamples.map { sample ->
-            ProbeSessionSampleExportPayload(
-                recordedAtMillis = sample.recordedAtMillis,
-                victim = sample.victim,
-                mcc = sample.mcc,
-                mnc = sample.mnc,
-                lac = sample.lac,
-                cid = sample.cid,
-                estimatedLat = sample.estimatedLat,
-                estimatedLon = sample.estimatedLon,
-                estimatedAccuracyM = sample.estimatedAccuracyM,
-                geolocationStatus = sample.geolocationStatus,
-                geolocationError = sample.geolocationError,
-                towersCount = sample.towersCount,
-                towersJson = sample.towersJson,
-                deltaMs = sample.deltaMs,
-                sampleType = sample.sampleType,
-                sipStatus = sample.sipStatus,
-                inviteMs = sample.inviteMs,
-                prMs = sample.prMs,
-                intercarrierCandidate = sample.intercarrierCandidate,
-                probeId = sample.probeId,
-                inviteSentAtMillis = sample.inviteSentAtMillis,
-                responseReceivedAtMillis = sample.responseReceivedAtMillis,
-                outcome = sample.outcome,
-                intervalSincePreviousProbeMs = sample.intervalSincePreviousProbeMs,
-                wifiRssiDbm = sample.wifiRssiDbm,
-                wifiFrequencyMhz = sample.wifiFrequencyMhz,
-                wifiLinkSpeedMbps = sample.wifiLinkSpeedMbps,
-                wifiBssidHash = sample.wifiBssidHash,
-                moving = sample.moving
-            )
-        }
+        samples = sortedSamples
     )
 }
 
 fun buildExperimentSessionExportJson(
     session: ExperimentSessionEntity,
     samples: List<ExperimentSampleEntity>,
+    attempts: List<ProbeAttemptEntity> = emptyList(),
     exportedAtMillis: Long,
     appInfo: ProbeExportAppInfo
 ): JSONObject {
     val payload = buildExperimentSessionExportPayload(
         session = session,
         samples = samples,
+        attempts = attempts,
         exportedAtMillis = exportedAtMillis,
         appInfo = appInfo
     )
@@ -152,6 +132,7 @@ suspend fun exportExperimentSessionToFile(
     }
 
     val samples = dao.getSamplesForSession(sessionDbId)
+    val attempts = db.probeAttemptDao().getForSession(sessionDbId)
     val exportedAtMillis = System.currentTimeMillis()
     val appInfo = ProbeExportAppInfo(
         appName = ctx.applicationInfo.loadLabel(ctx.packageManager).toString(),
@@ -162,6 +143,7 @@ suspend fun exportExperimentSessionToFile(
     val payload = buildExperimentSessionExportPayload(
         session = session,
         samples = samples,
+        attempts = attempts,
         exportedAtMillis = exportedAtMillis,
         appInfo = appInfo
     )
@@ -223,6 +205,87 @@ private fun sampleToJson(sample: ProbeSessionSampleExportPayload): JSONObject {
         .put("wifiLinkSpeedMbps", jsonValue(sample.wifiLinkSpeedMbps))
         .put("wifiBssidHash", jsonValue(sample.wifiBssidHash))
         .put("moving", sample.moving)
+        .put("contractVersion", jsonValue(sample.contractVersion))
+        .put("finishedAtMillis", jsonValue(sample.finishedAtMillis))
+        .put("finishReason", jsonValue(sample.finishReason))
+}
+
+private fun ExperimentSampleEntity.toExportPayload(): ProbeSessionSampleExportPayload {
+    return ProbeSessionSampleExportPayload(
+        recordedAtMillis = recordedAtMillis,
+        victim = victim,
+        mcc = mcc,
+        mnc = mnc,
+        lac = lac,
+        cid = cid,
+        estimatedLat = estimatedLat,
+        estimatedLon = estimatedLon,
+        estimatedAccuracyM = estimatedAccuracyM,
+        geolocationStatus = geolocationStatus,
+        geolocationError = geolocationError,
+        towersCount = towersCount,
+        towersJson = towersJson,
+        deltaMs = deltaMs,
+        sampleType = sampleType,
+        sipStatus = sipStatus,
+        inviteMs = inviteMs,
+        prMs = prMs,
+        intercarrierCandidate = intercarrierCandidate,
+        probeId = probeId,
+        inviteSentAtMillis = inviteSentAtMillis,
+        responseReceivedAtMillis = responseReceivedAtMillis,
+        outcome = outcome,
+        intervalSincePreviousProbeMs = intervalSincePreviousProbeMs,
+        wifiRssiDbm = wifiRssiDbm,
+        wifiFrequencyMhz = wifiFrequencyMhz,
+        wifiLinkSpeedMbps = wifiLinkSpeedMbps,
+        wifiBssidHash = wifiBssidHash,
+        moving = moving,
+        contractVersion = null,
+        finishedAtMillis = null,
+        finishReason = null
+    )
+}
+
+private fun ProbeAttemptEntity.toExportPayload(): ProbeSessionSampleExportPayload {
+    return ProbeSessionSampleExportPayload(
+        recordedAtMillis = responseReceivedAtMillis ?: inviteSentAtMillis ?: createdAtMillis,
+        victim = victim,
+        mcc = mcc ?: -1,
+        mnc = mnc ?: -1,
+        lac = lac ?: -1,
+        cid = cid ?: -1,
+        estimatedLat = estimatedLat,
+        estimatedLon = estimatedLon,
+        estimatedAccuracyM = estimatedAccuracyM,
+        geolocationStatus = geolocationStatus,
+        geolocationError = geolocationError,
+        towersCount = towersCount,
+        towersJson = towersJson,
+        deltaMs = deltaMs,
+        sampleType = when {
+            cid != null -> "cell"
+            deltaMs != null -> "delta"
+            else -> "attempt"
+        },
+        sipStatus = sipStatus,
+        inviteMs = inviteElapsedMs,
+        prMs = responseElapsedMs,
+        intercarrierCandidate = intercarrierCandidate,
+        probeId = attemptId,
+        inviteSentAtMillis = inviteSentAtMillis,
+        responseReceivedAtMillis = responseReceivedAtMillis,
+        outcome = outcome,
+        intervalSincePreviousProbeMs = intervalSincePreviousProbeMs,
+        wifiRssiDbm = wifiRssiDbm,
+        wifiFrequencyMhz = wifiFrequencyMhz,
+        wifiLinkSpeedMbps = wifiLinkSpeedMbps,
+        wifiBssidHash = wifiBssidHash,
+        moving = moving,
+        contractVersion = contractVersion,
+        finishedAtMillis = finishedAtMillis,
+        finishReason = finishReason
+    )
 }
 
 private fun buildDeviceIdentifier(): String? {
