@@ -2,9 +2,9 @@ package com.example.cellidtracker.probe
 
 import android.content.Context
 import android.os.Build
+import android.system.Os
 import java.io.File
 import java.io.IOException
-import java.nio.file.Files
 
 data class ProbeAssets(
     val workDir: File,
@@ -84,8 +84,10 @@ fun ensureProbeAssets(ctx: Context): ProbeAssets {
     val configVictim = File(configDir, "CHT/victim_list")
     configVictim.parentFile?.mkdirs()
     runCatching {
-        Files.deleteIfExists(configVictim.toPath())
-        Files.createSymbolicLink(configVictim.toPath(), rootVictim.toPath())
+        if (configVictim.exists() && !configVictim.delete()) {
+            throw IOException("Unable to replace ${configVictim.absolutePath}")
+        }
+        Os.symlink(rootVictim.absolutePath, configVictim.absolutePath)
     }.getOrElse {
         runCatching { configVictim.writeText(rootVictim.readText()) }
     }

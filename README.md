@@ -25,6 +25,16 @@ Key features:
 ./gradlew :app:installDebug
 ```
 
+## Developer verification
+
+Run the Android tests, lint, APK builds, and packaged native-artifact check before committing:
+
+```bash
+./scripts/verify.sh
+```
+
+Set `VERIFY_NATIVE_BUILD=1` and `NDK` to include a native Release build. The pre-refactor behavior contract is recorded in `docs/baselines/PHASE_0_BASELINE.md`.
+
 ### Provide your Google API key (Android app)
 Put your key in `local.properties` (git-ignored):
 ```

@@ -1,0 +1,5 @@
+100: Trying
+183: Session Progress
+[intercarrier] status=183 delta_ms=749 invite=799870333 pr=799871082
+[probe_event] call_id=phase0-call-001 status=183 delta_ms=749 invite_ms=799870333 pr_ms=799871082 mcc=466 mnc=92 lac=13700 cid=81261593
+[fsm] SPROG -> PRACK reason=characterization fixture
