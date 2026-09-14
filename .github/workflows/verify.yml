@@ -36,7 +36,7 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: Install native toolchain
-        run: "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
+        run: $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;$NDK_VERSION"
       - name: Verify packaged artifact
         run: ./scripts/verify-native-artifact.sh
       - name: Compile native probe
