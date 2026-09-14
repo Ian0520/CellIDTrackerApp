@@ -250,15 +250,16 @@ Required changes:
 
 The current manual-ground-truth fields are not part of the desired end state.
 
-## Probe App Implementation Status (Updated 2026-04-10)
+## Probe App Implementation Status (Updated 2026-09-14)
 
 ### Done
 
-- Added probe-session persistence with two tables:
+- Added probe-session persistence with three tables:
   - `experiment_sessions`
   - `experiment_samples`
+  - `probe_attempts` (schema 4 structured records)
 - Added session lifecycle in app:
-  - start session generates UUID `sessionId`
+  - start session generates a local date/time `sessionId`
   - stop session ends the session and exports one file
 - Added probe-sample attachment to active session for each probe event, including:
   - `recordedAtMillis`, `victim`, `mcc/mnc/lac/cid`
@@ -268,32 +269,25 @@ The current manual-ground-truth fields are not part of the desired end state.
   - `deltaMs`, `moving`
 - Added export path and filename behavior:
   - directory: `.../files/experiment_sessions/`
-  - filename: `probe_session_<sessionId>.json`
+  - filename: `<sessionId>.json`
 - Added session metadata in export:
   - `schemaVersion`, `sessionId`, `startedAtMillis`, `endedAtMillis`
   - app name/package/version
   - device identifier (manufacturer/model/device)
 - Added startup compatibility migration for previously inconsistent paused schemas:
   - DB migration to v7 recreates experiment tables if v6 legacy shape is detected.
-- Added parser-side duplicate suppression for native log bursts:
-  - app now suppresses repeated parsed outputs by **probe-cycle boundary** (`100: Trying` marker), not by a long fixed time window
-  - this avoids the previous over-suppression bug where repeated probes in the same cell were incorrectly dropped after the first sample
-  - this directly addresses duplicate history/session entries caused by native retransmissions and immediate retry behavior (e.g., after `500/408/486`)
-- Added app-side commit guard against duplicate geolocation/history writes:
-  - if the same `(mcc,mnc,lac,cid,deltaMs)` is about to be committed again within a short window, it is dropped
-  - this prevents parser burst edge cases from triggering repeated geolocation requests for one probe cycle
-- Added canonical native probe event path to reduce log-coupled duplication:
-  - native now emits one structured line per accepted probe transaction:
-    - `[probe_event] call_id=... status=... delta_ms=... invite_ms=... pr_ms=... mcc=... mnc=... lac=... cid=...`
-  - app-side history/geolocation now consumes this structured event directly instead of reconstructing samples from raw multi-line `mcc/mnc/lac/cellId` log text
-  - app deduplicates by native `call_id`, so repeated `183 Session Progress` retransmissions in the same transaction cannot create repeated history entries
-- Fixed `deltaMs` binding per saved probe sample:
-  - app now uses delta-anchored pairing and supports both native line orders:
-    - cell fields first then `[intercarrier] delta_ms=...`
-    - `[intercarrier] delta_ms=...` first then cell fields
-  - app only commits a probe sample when a fresh delta marker is matched (instead of reusing stale/old delta)
-  - stale pending parsed data is dropped if it exceeds the delta-match freshness window, preventing cross-cycle mis-attachment
-  - this avoids the "first sample only has delta, later samples null/stale or shifted" failure mode
+- Added a versioned native/app JSONL protocol:
+  - native emits `stream_ready`, `attempt_started`, `provisional_received`, `cell_observed`, and `attempt_finished`
+  - every attempt event is keyed by the fresh INVITE's SIP Call-ID
+  - native records only the first matching `180/183`; later retransmissions cannot overwrite latency
+  - Call-ID and Via branch checks reject delayed responses from former attempts
+  - the Android reducer accepts out-of-order events but ignores duplicate/conflicting repeats
+  - each attempt updates one `probe_attempts` row and triggers at most one geolocation request/history entry
+  - legacy `[intercarrier]` and `[probe_event]` lines remain visible, but are not persisted after `stream_ready`
+  - protocol details: `docs/PROBE_EVENT_PROTOCOL.md`
+- Retained the former text parser only as compatibility fallback:
+  - it is used when an older native binary never announces `stream_ready`
+  - current packaged binaries use the JSONL attempt protocol, so cell/delta attachment no longer depends on line ordering or freshness windows
 - Patched native probe timing reset points:
   - reset `t_trying` / `t_pr` before every fresh INVITE (normal loop + immediate retry paths)
   - this ensures native can emit a new `[intercarrier] delta_ms=...` per probe cycle instead of only once per long-running process
@@ -339,23 +333,18 @@ The current manual-ground-truth fields are not part of the desired end state.
 
 ### Next Probe-Side Work (Priority Order)
 
-1. Add session management UX polish:
+1. Run an on-device structured-pipeline validation:
+   - confirm one exported row per unique native Call-ID
+   - compare exported `deltaMs` with the adjacent native diagnostic line
+   - verify retransmitted `183` messages do not add rows or geolocation requests
+2. Add session management UX polish:
    - show active session elapsed time and sample count
    - add "re-export last completed session" action
-2. Validate and document parser cycle-boundary assumptions:
-   - current model accepts at most one parsed sample per `[intercarrier]` cycle
-   - validate with field logs per carrier that this matches native output structure (and adjust if a carrier emits multiple true samples per cycle)
-3. Tune and document delta pairing wait window:
-   - current delta/cell match freshness window: 2 seconds
-   - validate against field logs to ensure both line orders are matched reliably in normal conditions
-4. Add probe-session validation tests:
-   - migration test for v5 -> v6 -> v7
-   - migration test for inconsistent legacy v6 -> v7
-   - export JSON contract test using realistic end-to-end sample sets
-5. Add operator workflow docs:
+3. Run the Room migration tests on a connected emulator/device and retain a pre-upgrade database backup.
+4. Add operator workflow docs:
    - exact runbook for sharing `sessionId` with ground-truth app operator
    - pull/export commands and expected file locations
-6. Optional probe-side tags:
+5. Optional probe-side tags:
    - add any additional carrier/environment tags available on probe device to exported sample records.
 
 ### Probe-Side Definition Of "One Session"
@@ -366,7 +355,7 @@ One probe session means one continuous collection run:
 - all produced probe samples are attached to the same `sessionId`
 - tap **Stop & export** to finalize and write one `probe_session_<sessionId>.json`
 
-Within one continuous run, repeated native parsing bursts inside the same probe cycle are de-duplicated by the app before history/session insertion.
+Within one continuous run, all native events for one fresh INVITE transaction reduce into one database row. Repeated provisional responses do not create additional history or session entries.
 
 ## Acceptance Criteria
 

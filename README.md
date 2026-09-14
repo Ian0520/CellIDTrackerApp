@@ -5,8 +5,8 @@ CellIDTracker is an Android app that drives a bundled (root-required) probe bina
 
 Key features:
 - Set victim number (written to `victim_list` for the probe).
-- Run the probe (root) and live-parse MCC/MNC/LAC/CID from stdout.
-- Send multiple recent cell towers to Google Geolocation to improve stability/accuracy; show lat/lon/accuracy on the map with an accuracy circle.
+- Run the probe (root) and consume versioned native events containing timing and MCC/MNC/LAC/CID.
+- Send the latest cell from each native attempt to Google Geolocation; show lat/lon/accuracy on the map with an accuracy circle.
 - Start/stop offline experiment sessions with automatic date/time IDs and filenames.
 - View recent probe history (time, victim, cell info, location) and tap an entry to restore its location on the map.
 - View the raw log stream inside the app.
@@ -80,4 +80,4 @@ The JSON contains each entry’s victim, mcc/mnc/lac/cid, lat/lon/accuracy, time
 The app exports:
 - `Android/data/com.example.cellidtracker/files/experiment_sessions/<sessionId>.json`
 
-Schema 3 records native/derived probe IDs, monotonic INVITE/provisional timestamps, wall-clock timestamps, `deltaMs`, SIP status, outcome, actual probe interval, returned cell/location, and session-salted probe-side Wi-Fi context. See `EXPERIMENT_DATA_SCHEMA.md` for the complete cross-app schema.
+Schema 4 exports one record per native INVITE attempt, including attempts without a returned cell. It records Call-ID, monotonic INVITE/provisional timestamps, correlation wall-clock timestamps, `deltaMs`, SIP status, outcome, actual probe interval, returned cell/location, and session-salted probe-side Wi-Fi context. See `EXPERIMENT_DATA_SCHEMA.md` for the complete cross-app schema and `docs/PROBE_EVENT_PROTOCOL.md` for the native/app contract.

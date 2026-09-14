@@ -8,6 +8,6 @@ class HistoryDatabaseMigrationListTest {
     fun registeredMigrationsCoverEveryVersionThroughCurrentSchema() {
         val versionPairs = HistoryDatabase.ALL_MIGRATIONS.map { it.startVersion to it.endVersion }
 
-        assertEquals((1 until 11).map { it to it + 1 }, versionPairs)
+        assertEquals((1 until 12).map { it to it + 1 }, versionPairs)
     }
 }

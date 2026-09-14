@@ -25,6 +25,7 @@
 
 #include "sip.h"
 #include "application.h"
+#include "probe_event.h"
 
 
 #define IPV6_VERSION 0x60
@@ -102,6 +103,22 @@ namespace {
     parsed.cid = static_cast<int>(std::stoull(match[4].str(), nullptr, 16));
     return parsed;
   }
+
+  void emitAttemptStartedAfterTiming(State& state) {
+    if (!util::context.remoteCellIDProber ||
+        state.attemptStartedEmitted ||
+        state.activeInviteCallId.empty() ||
+        !state.t_invite.has_value()) {
+      return;
+    }
+    const auto inviteMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        state.t_invite->time_since_epoch()).count();
+    std::cout << probe_event::attemptStarted(
+        state.activeInviteCallId,
+        inviteMs,
+        state.inviteUnixMs) << std::endl;
+    state.attemptStartedEmitted = true;
+  }
 }  // namespace
 
 Session::Session(const std::string& iface)
@@ -164,6 +181,9 @@ void Session::run(ESPConfig&& cfg, Application& application) {
 
 
   std::cout << "\nReady to run attacks\n" << std::endl;
+  if (util::context.remoteCellIDProber) {
+    std::cout << probe_event::streamReady() << std::endl;
+  }
   std::ifstream ifs(util::context.calleeId);
   if (!ifs) {
     std::cerr << "can't find the file, victim_list" << std::endl;
@@ -506,9 +526,23 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
       state.firstProvisionalStatus = 183;
+      emitAttemptStartedAfterTiming(state);
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
-        std::cout << "[intercarrier] status=183 delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+        const auto inviteMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count();
+        const auto prMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count();
+        state.firstProvisionalUnixMs = state.inviteUnixMs + delta;
+        std::cout << "[intercarrier] status=183 delta_ms=" << delta << " invite=" << inviteMs << " pr=" << prMs << std::endl;
+        if (util::context.remoteCellIDProber) {
+          std::cout << probe_event::provisionalReceived(
+              state.activeInviteCallId,
+              183,
+              delta,
+              inviteMs,
+              prMs,
+              state.inviteUnixMs,
+              state.firstProvisionalUnixMs) << std::endl;
+        }
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -535,9 +569,23 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     if (!state.t_pr.has_value()) {
       state.t_pr = now;
       state.firstProvisionalStatus = 180;
+      emitAttemptStartedAfterTiming(state);
       if (state.t_invite.has_value()) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(*state.t_pr - *state.t_invite).count();
-        std::cout << "[intercarrier] status=180 delta_ms=" << delta << " invite=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count() << " pr=" << std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count() << std::endl;
+        const auto inviteMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_invite->time_since_epoch()).count();
+        const auto prMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count();
+        state.firstProvisionalUnixMs = state.inviteUnixMs + delta;
+        std::cout << "[intercarrier] status=180 delta_ms=" << delta << " invite=" << inviteMs << " pr=" << prMs << std::endl;
+        if (util::context.remoteCellIDProber) {
+          std::cout << probe_event::provisionalReceived(
+              state.activeInviteCallId,
+              180,
+              delta,
+              inviteMs,
+              prMs,
+              state.inviteUnixMs,
+              state.firstProvisionalUnixMs) << std::endl;
+        }
         std::ofstream log("paging_times_v2.csv", std::ios::app);
         if (log.is_open()) {
           auto nowSys = std::chrono::system_clock::now();
@@ -632,6 +680,18 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
               << " lac=" << cell.lac
               << " cid=" << cell.cid
               << std::endl;
+    std::cout << probe_event::cellObserved(
+        state.activeInviteCallId,
+        eventStatus,
+        delta,
+        inviteMs,
+        prMs,
+        state.inviteUnixMs,
+        state.firstProvisionalUnixMs,
+        cell.mcc,
+        cell.mnc,
+        cell.lac,
+        cell.cid) << std::endl;
     state.probeEventEmitted = true;
   }
 

@@ -13,15 +13,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProbeHistoryEntity::class,
         ExperimentSessionEntity::class,
         ExperimentSampleEntity::class,
-        ProbeRunEntity::class
+        ProbeRunEntity::class,
+        ProbeAttemptEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = true
 )
 abstract class HistoryDatabase : RoomDatabase() {
     abstract fun historyDao(): ProbeHistoryDao
     abstract fun experimentDao(): ExperimentDao
     abstract fun probeRunDao(): ProbeRunDao
+    abstract fun probeAttemptDao(): ProbeAttemptDao
 
     companion object {
         @Volatile
@@ -260,6 +262,67 @@ abstract class HistoryDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `probe_attempts` (
+                        `attemptKey` TEXT NOT NULL,
+                        `attemptId` TEXT NOT NULL,
+                        `contractVersion` INTEGER NOT NULL,
+                        `sessionDbId` INTEGER NOT NULL,
+                        `probeRunId` INTEGER,
+                        `victim` TEXT NOT NULL,
+                        `moving` INTEGER NOT NULL,
+                        `inviteElapsedMs` INTEGER,
+                        `inviteSentAtMillis` INTEGER,
+                        `responseElapsedMs` INTEGER,
+                        `responseReceivedAtMillis` INTEGER,
+                        `sipStatus` INTEGER,
+                        `deltaMs` INTEGER,
+                        `mcc` INTEGER,
+                        `mnc` INTEGER,
+                        `lac` INTEGER,
+                        `cid` INTEGER,
+                        `estimatedLat` REAL,
+                        `estimatedLon` REAL,
+                        `estimatedAccuracyM` REAL,
+                        `geolocationStatus` TEXT NOT NULL,
+                        `geolocationError` TEXT,
+                        `towersCount` INTEGER NOT NULL,
+                        `towersJson` TEXT NOT NULL,
+                        `intercarrierCandidate` INTEGER,
+                        `intervalSincePreviousProbeMs` INTEGER,
+                        `wifiRssiDbm` INTEGER,
+                        `wifiFrequencyMhz` INTEGER,
+                        `wifiLinkSpeedMbps` INTEGER,
+                        `wifiBssidHash` TEXT,
+                        `finishedAtMillis` INTEGER,
+                        `outcome` TEXT NOT NULL,
+                        `finishReason` TEXT,
+                        `createdAtMillis` INTEGER NOT NULL,
+                        `updatedAtMillis` INTEGER NOT NULL,
+                        PRIMARY KEY(`attemptKey`),
+                        FOREIGN KEY(`sessionDbId`) REFERENCES `experiment_sessions`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_attempts_sessionDbId` " +
+                        "ON `probe_attempts` (`sessionDbId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_attempts_inviteSentAtMillis` " +
+                        "ON `probe_attempts` (`inviteSentAtMillis`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_probe_attempts_responseReceivedAtMillis` " +
+                        "ON `probe_attempts` (`responseReceivedAtMillis`)"
+                )
+            }
+        }
+
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -270,7 +333,8 @@ abstract class HistoryDatabase : RoomDatabase() {
             MIGRATION_7_8,
             MIGRATION_8_9,
             MIGRATION_9_10,
-            MIGRATION_10_11
+            MIGRATION_10_11,
+            MIGRATION_11_12
         )
     }
 }

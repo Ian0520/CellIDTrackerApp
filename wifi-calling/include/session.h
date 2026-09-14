@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -50,7 +51,11 @@ struct State {
   bool retryInvitePending{false};
   // Emit one structured probe event per fresh INVITE transaction.
   bool probeEventEmitted{false};
+  bool attemptStartedEmitted{false};
+  bool attemptFinishedEmitted{false};
   int firstProvisionalStatus{0};
+  std::int64_t inviteUnixMs{0};
+  std::int64_t firstProvisionalUnixMs{0};
 
   bool ack;
   bool psh;

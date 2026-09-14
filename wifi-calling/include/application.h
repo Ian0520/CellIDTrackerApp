@@ -3,6 +3,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <poll.h>
 #include <curl/curl.h>
@@ -66,6 +67,8 @@ private:
   static std::string extractBranchFromSip(const std::string& sip);
   void prepareFreshInvite(SipMessage& sip);
   void armInviteTiming(const std::string& invite);
+  void emitActiveAttemptStarted();
+  void emitActiveAttemptFinished(std::string_view reason);
 
   Session& session;
 
