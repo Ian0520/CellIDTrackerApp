@@ -39,6 +39,23 @@ cmake -S all -B build -D CMAKE_TOOLCHAIN_FILE=$HOME/android-ndk-r25/build/cmake/
 cmake --build build --config Release --parallel
 ```
 
+### 2.3 Run Host Tests
+
+From the repository root:
+
+```bash
+./scripts/test-native-contract.sh
+```
+
+These tests exercise the structured event contract, SIP response parser, response state machine, and watchdog policy without sending network traffic.
+
+### 2.4 Probe Runtime Boundaries
+
+- `ProbeController` owns the continuous probe loop and executes retry/watchdog decisions.
+- `probe_state_machine` converts SIP response status and retry context into ordered state transitions.
+- `sip_response` parses SIP identifiers, response metadata, and cellular information.
+- `Session` owns packet/ESP transport, monotonic latency timestamps, and structured event emission.
+
 ## 3. Install
 ### 3.1 Connect Device
 - Open the developer options, and allow the USB debugging
