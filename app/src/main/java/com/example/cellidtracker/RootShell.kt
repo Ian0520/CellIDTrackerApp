@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -49,6 +50,31 @@ object RootShell {
         val exitCode = process.waitFor()
         return ShellResult(exitCode, stdout.toString(), stderr.toString())
     }
+
+    /** Streams an app-private file to a root-owned destination without requiring
+     * the root SELinux domain to traverse the app data directory. */
+    fun copyFileAsRoot(source: File, destination: String, executable: Boolean): ShellResult {
+        require(destination.startsWith("/data/local/tmp/cellidtracker-")) {
+            "Refusing to stage outside the CellIDTracker temporary directory"
+        }
+        val quotedDestination = shellQuote(destination)
+        val quotedParent = shellQuote(destination.substringBeforeLast('/'))
+        val mode = if (executable) "700" else "600"
+        val command = "umask 077; mkdir -p $quotedParent && " +
+            "cat > $quotedDestination && chmod $mode $quotedDestination"
+        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+
+        source.inputStream().use { input ->
+            process.outputStream.use { output -> input.copyTo(output) }
+        }
+        val stdout = process.inputStream.bufferedReader().use { it.readText() }
+        val stderr = process.errorStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
+        return ShellResult(exitCode, stdout, stderr)
+    }
+
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\\''") + "'"
 
     /**
      * 串流版：邊讀 stdout/stderr 邊 callback 給 UI。

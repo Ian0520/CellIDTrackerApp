@@ -153,6 +153,7 @@ void Session::run(ESPConfig&& cfg, Application& application) {
   std::string numbers;
   std::vector<std::string> victimList;
   while (std::getline(ifs, numbers)) {
+    if (numbers.empty()) continue;
     std::string internationalNumber = "+886" + numbers.substr(1);
 
     state.DoSCount[internationalNumber] = 0;
@@ -161,6 +162,11 @@ void Session::run(ESPConfig&& cfg, Application& application) {
     victimList.emplace_back(internationalNumber);
   }
   ifs.close();
+
+  if (victimList.empty()) {
+    std::cerr << "victim_list does not contain a target number" << std::endl;
+    return;
+  }
 
 
   pollfd pfd{};
