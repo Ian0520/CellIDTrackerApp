@@ -15,17 +15,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.cellidtracker.data.ExperimentSampleEntity
 import com.example.cellidtracker.data.ExperimentSessionEntity
 import com.example.cellidtracker.data.HistoryDatabase
 import com.example.cellidtracker.data.ProbeAttemptRepository
+import com.example.cellidtracker.data.ProbeResultRepository
 import com.example.cellidtracker.data.ProbeRunEntity
-import com.example.cellidtracker.experiment.exportExperimentSessionToFile
+import com.example.cellidtracker.data.ProbeRunRepository
+import com.example.cellidtracker.data.RecordedProbeResult
+import com.example.cellidtracker.experiment.ExperimentSessionRepository
 import com.example.cellidtracker.history.ProbeHistory
-import com.example.cellidtracker.history.encodeTowers
 import com.example.cellidtracker.history.exportHistoryToFile
-import com.example.cellidtracker.history.toDomain
-import com.example.cellidtracker.history.toEntity
 import com.example.cellidtracker.probe.ProbeEventFromNative
 import com.example.cellidtracker.probe.ParsedCellFromLog
 import com.example.cellidtracker.probe.ProbeAttemptChange
@@ -34,6 +33,9 @@ import com.example.cellidtracker.probe.ProbeAttemptEvent
 import com.example.cellidtracker.probe.ProbeCellObservedEvent
 import com.example.cellidtracker.probe.ProbeDeltaEventFromNative
 import com.example.cellidtracker.probe.ProbeAssets
+import com.example.cellidtracker.probe.ProbeLoopEndReason
+import com.example.cellidtracker.probe.ProbeProcessCoordinator
+import com.example.cellidtracker.probe.ProbeProcessCycle
 import com.example.cellidtracker.probe.ProbeProvisionalReceivedEvent
 import com.example.cellidtracker.probe.ProbeResponseIntervalTracker
 import com.example.cellidtracker.probe.ProbeStreamSession
@@ -41,11 +43,7 @@ import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
 import java.io.File
 import java.io.IOException
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -64,23 +62,16 @@ private const val LOG_PREVIEW_LINES = 20
 private const val MAX_IN_MEMORY_HISTORY_PER_VICTIM = 800
 private const val MAX_IN_MEMORY_RUNS_PER_VICTIM = 200
 private const val LOGCAT_SAMPLE_EVERY_N_LINES = 20
-private const val AUTO_RESTART_MAX_RETRIES = 3
-private const val AUTO_RESTART_BASE_BACKOFF_MS = 1500L
-private const val AUTO_RESTART_MAX_BACKOFF_MS = 15000L
 private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
 private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
 private const val DEFAULT_PROBE_INTERVAL_SECONDS = 30
 private val PROBE_INTERVAL_OPTIONS = setOf(0, 5, 10, 20, 30, 60)
-private const val PROBE_STDOUT_IDLE_RESTART_MS = 90_000L
-private const val PROBE_RESULT_IDLE_RESTART_MS = 10 * 60_000L
-private const val PROBE_WATCHDOG_POLL_MS = 5_000L
 private const val INTERCARRIER_DELTA_THRESHOLD_MS = 525L
 private const val ACCURACY_SHRINK_FACTOR = 0.55
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
-private val SESSION_ID_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
 
 sealed interface MainUiEvent {
     data class ShowSnackbar(val message: String) : MainUiEvent
@@ -97,12 +88,6 @@ private data class VictimUpdateResult(
     val snackbarMessage: String
 )
 
-private data class ActiveProbeRun(
-    val dbId: Long,
-    val victim: String,
-    val startedAtMillis: Long
-)
-
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
@@ -113,9 +98,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         intervalTracker = probeResponseIntervalTracker,
         isIntercarrierDelta = ::isIntercarrierDelta
     )
+    private val probeResultRepository = ProbeResultRepository(
+        historyDao = db.historyDao(),
+        experimentDao = db.experimentDao(),
+        attemptRepository = probeAttemptRepository,
+        intervalTracker = probeResponseIntervalTracker,
+        isIntercarrierDelta = ::isIntercarrierDelta
+    )
+    private val experimentSessionRepository = ExperimentSessionRepository(appContext, db)
+    private val probeRunRepository = ProbeRunRepository(db.probeRunDao())
+    private val probeProcessCoordinator = ProbeProcessCoordinator()
     private val logLines = ArrayDeque<String>()
     private val logDirty = AtomicBoolean(false)
-    private val recentTowers = mutableListOf<CellTowerParams>()
     private val _events = MutableSharedFlow<MainUiEvent>(extraBufferCapacity = 16)
 
     val events = _events.asSharedFlow()
@@ -163,9 +157,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var activeExperimentStartedAtMillis by mutableStateOf<Long?>(null)
         private set
 
-    private var userStopRequested by mutableStateOf(false)
     private var activeExperimentSessionDbId: Long? = null
-    private var activeProbeRun: ActiveProbeRun? = null
+    private var activeProbeRun: ProbeRunEntity? = null
     private var forwardedLogcatLineCount = 0
 
     init {
@@ -290,9 +283,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearCurrentVictimHistory() {
         val key = selectedHistoryVictim ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            db.historyDao().clearForVictim(key)
-            db.probeRunDao().clearForVictim(key)
+        viewModelScope.launch {
+            probeResultRepository.clearForVictim(key)
+            probeRunRepository.clearForVictim(key)
         }
         historyByVictim.remove(key)
         probeRunsByVictim.remove(key)
@@ -317,21 +310,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             try {
-                val now = System.currentTimeMillis()
-                val session = ExperimentSessionEntity(
-                    sessionId = generateTimestampSessionId(now),
-                    startedAtMillis = now,
-                    endedAtMillis = null,
-                    createdAtMillis = now,
-                    exportedAtMillis = null
-                )
-                val insertedId = withContext(Dispatchers.IO) {
-                    db.experimentDao().insertSession(session)
-                }
-                activeExperimentSessionDbId = insertedId
-                activeExperimentSessionId = session.sessionId
-                activeExperimentStartedAtMillis = session.startedAtMillis
-                probeResponseIntervalTracker.reset()
+                val session = experimentSessionRepository.start()
+                applyActiveExperimentSession(session)
                 showSnackbar("Experiment session started: ${session.sessionId}")
             } catch (e: Exception) {
                 showSnackbar("Start session failed: ${e.message ?: e}")
@@ -348,10 +328,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    db.experimentDao().endSession(sessionDbId, System.currentTimeMillis())
-                }
-                val outFile = exportExperimentSessionToFile(appContext, db, sessionDbId)
+                val outFile = experimentSessionRepository.endAndExport(sessionDbId)
                 clearActiveExperimentSessionState()
                 showSnackbar("Session exported: ${outFile.absolutePath}")
             } catch (e: Exception) {
@@ -373,7 +350,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val result = updateVictimNumber(victimNum)
                 replaceLogText(result.logText)
-                recentTowers.clear()
                 showSnackbar(result.snackbarMessage)
             } catch (e: Exception) {
                 replaceLogText("Set victim failed: ${e.message ?: e}")
@@ -389,110 +365,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         isRootRunning = true
-        resetProbeRunState()
+        probeProcessCoordinator.prepareForRun()
         vibrate(PROBE_START_VIBRATION_MS)
 
         viewModelScope.launch {
             try {
                 startProbeForegroundService(mode = "probe")
                 val prepared = prepareProbeRun("Running probe (root)...")
-                var retryCount = 0
-
-                while (isRootRunning) {
-                    startProbeRun(prepared.assets, mode = "probe")
-                    val streamSession = ProbeStreamSession(
-                        contextProvider = { captureProbeAttemptContext(prepared.assets) }
-                    )
-                    val structuredEventJob = launch {
-                        consumeStructuredProbeEvents(streamSession)
-                    }
-                    val lastStdoutAtMillis = AtomicLong(System.currentTimeMillis())
-                    val watchdogJob = launch {
-                        while (isRootRunning && !userStopRequested) {
-                            delay(PROBE_WATCHDOG_POLL_MS)
-                            val now = System.currentTimeMillis()
-                            val idleMillis = now - lastStdoutAtMillis.get()
-                            if (idleMillis >= PROBE_STDOUT_IDLE_RESTART_MS) {
-                                appendLogText(
-                                    "\n[watchdog] no probe stdout for ${idleMillis}ms; restarting native probe..."
-                                )
-                                RootShell.requestStop()
-                                break
-                            }
-                            val resultIdleMillis = now - streamSession.lastProbeEventAtMillis.get()
-                            if (resultIdleMillis >= PROBE_RESULT_IDLE_RESTART_MS) {
-                                appendLogText(
-                                    "\n[watchdog] no probe result for ${resultIdleMillis}ms; restarting native probe..."
-                                )
-                                RootShell.requestStop()
-                                break
-                            }
-                        }
-                    }
-                    val exitCode = try {
-                        runProbeStreaming(prepared.command) { line ->
-                            lastStdoutAtMillis.set(System.currentTimeMillis())
-                            runCatching {
-                                handleProbeStdoutLine(line, prepared.assets, streamSession)
-                            }.onFailure { t ->
-                                Log.e(LOGCAT_TAG, "Probe stdout handler crashed", t)
-                                appendLogText("\n[ERR] stdout handler exception: ${t.message ?: t}")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        appendLogText("\n[Auto-restart] probe runner exception: ${e.message ?: e}")
-                        -999
-                    } finally {
-                        watchdogJob.cancel()
-                        watchdogJob.join()
-                    }
-                    streamSession.close()
-                    structuredEventJob.join()
-
-                    appendProcessDone(exitCode)
-                    endProbeRun(exitCode)
-
-                    if (userStopRequested) {
-                        break
-                    }
-
-                    if (!autoRestartProbe && exitCode == 0) {
-                        if (!userStopRequested) {
-                            showSnackbar("Probe finished (exit $exitCode)")
-                        }
-                        break
-                    }
-
-                    if (!autoRestartProbe && retryCount >= AUTO_RESTART_MAX_RETRIES) {
-                        appendLogText(
-                            "\n[Auto-restart] max retries reached ($AUTO_RESTART_MAX_RETRIES). Stop restarting."
+                val result = probeProcessCoordinator.runContinuously(
+                    command = prepared.command,
+                    keepRunning = { isRootRunning },
+                    autoRestart = { autoRestartProbe },
+                    createCycle = {
+                        startProbeRun(prepared.assets, mode = "probe")
+                        val streamSession = ProbeStreamSession(
+                            contextProvider = { captureProbeAttemptContext(prepared.assets) }
                         )
+                        val structuredEventJob = launch {
+                            consumeStructuredProbeEvents(streamSession)
+                        }
+                        ProbeProcessCycle(
+                            onStdoutLine = { line ->
+                                runCatching {
+                                    handleProbeStdoutLine(line, prepared.assets, streamSession)
+                                }.onFailure { error ->
+                                    Log.e(LOGCAT_TAG, "Probe stdout handler crashed", error)
+                                    appendLogText(
+                                        "\n[ERR] stdout handler exception: ${error.message ?: error}"
+                                    )
+                                }
+                            },
+                            lastProbeResultAtMillis = {
+                                streamSession.lastProbeEventAtMillis.get()
+                            },
+                            closeAction = {
+                                streamSession.close()
+                                structuredEventJob.join()
+                            }
+                        )
+                    },
+                    onCycleFinished = { exitCode, stoppedByUser ->
+                        appendProcessDone(exitCode, stoppedByUser)
+                        endProbeRun(exitCode, stoppedByUser)
+                    },
+                    onLog = ::appendLogText,
+                    onStderrLine = ::handleProbeStderrLine,
+                    onRunnerException = { error ->
+                        appendLogText(
+                            "\n[Auto-restart] probe runner exception: ${error.message ?: error}"
+                        )
+                    }
+                )
+
+                when (result.reason) {
+                    ProbeLoopEndReason.PROCESS_COMPLETED -> {
+                        showSnackbar("Probe finished (exit ${result.exitCode})")
+                    }
+                    ProbeLoopEndReason.RETRY_LIMIT_REACHED -> {
                         showSnackbar(
-                            "Probe exited unexpectedly (exit $exitCode). Auto-restart stopped after $AUTO_RESTART_MAX_RETRIES retries."
-                        )
-                        break
-                    }
-
-                    retryCount += 1
-                    val backoffMs = computeAutoRestartBackoffMs(retryCount)
-                    if (autoRestartProbe) {
-                        appendLogText(
-                            "\n[Auto-restart] probe exited (exit $exitCode). Restart in ${backoffMs}ms."
-                        )
-                    } else {
-                        appendLogText(
-                            "\n[Auto-restart] unexpected exit (exit $exitCode). Restart $retryCount/$AUTO_RESTART_MAX_RETRIES in ${backoffMs}ms."
+                            "Probe exited unexpectedly (exit ${result.exitCode}). " +
+                                "Auto-restart stopped after ${result.attemptedRestarts} retries."
                         )
                     }
-                    delay(backoffMs)
-                    if (userStopRequested || !isRootRunning) break
-                    appendLogText("\n[Auto-restart] restarting probe now...")
+                    ProbeLoopEndReason.USER_STOPPED,
+                    ProbeLoopEndReason.CONTROLLER_STOPPED -> Unit
                 }
             } catch (e: Exception) {
                 replaceLogText("Probe failed: ${e.message ?: e}")
                 showSnackbar("Probe failed: ${e.message ?: e}")
             } finally {
-                endProbeRun(null)
+                endProbeRun(null, probeProcessCoordinator.isUserStopRequested)
                 isRootRunning = false
                 stopProbeForegroundServiceIfIdle()
                 vibrate(PROBE_END_VIBRATION_MS)
@@ -511,7 +453,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         isIntercarrierRunning = true
-        resetProbeRunState()
+        probeProcessCoordinator.prepareForRun()
         intercarrierStatus = INTERCARRIER_PENDING
 
         viewModelScope.launch {
@@ -525,19 +467,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     consumeStructuredProbeEvents(streamSession)
                 }
                 val exitCode = try {
-                    runProbeStreaming(prepared.command) { line ->
-                        runCatching {
-                            handleIntercarrierStdoutLine(line, prepared.assets, streamSession)
-                        }.onFailure { t ->
-                            Log.e(LOGCAT_TAG, "Intercarrier stdout handler crashed", t)
-                            appendLogText("\n[ERR] intercarrier stdout handler exception: ${t.message ?: t}")
-                        }
-                    }
+                    probeProcessCoordinator.runOnce(
+                        command = prepared.command,
+                        onStdoutLine = { line ->
+                            runCatching {
+                                handleIntercarrierStdoutLine(line, prepared.assets, streamSession)
+                            }.onFailure { error ->
+                                Log.e(LOGCAT_TAG, "Intercarrier stdout handler crashed", error)
+                                appendLogText(
+                                    "\n[ERR] intercarrier stdout handler exception: " +
+                                        "${error.message ?: error}"
+                                )
+                            }
+                        },
+                        onStderrLine = ::handleProbeStderrLine
+                    )
                 } finally {
                     streamSession.close()
                     structuredEventJob.join()
                 }
-                appendProcessDone(exitCode)
+                appendProcessDone(exitCode, probeProcessCoordinator.isUserStopRequested)
                 showSnackbar("Inter-carrier test finished (exit $exitCode)")
             } catch (e: Exception) {
                 replaceLogText("Inter-carrier test failed: ${e.message ?: e}")
@@ -627,10 +576,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return VictimUpdateResult(logText = logText, snackbarMessage = snackbarMessage)
     }
 
-    private fun resetProbeRunState() {
-        userStopRequested = false
-    }
-
     private suspend fun prepareProbeRun(title: String): PreparedProbeRun {
         val assets = loadProbeAssets()
         val command = buildProbeCommand(assets)
@@ -638,21 +583,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return PreparedProbeRun(assets = assets, command = command)
     }
 
-    private suspend fun runProbeStreaming(
-        command: String,
-        onStdoutLine: (String) -> Unit
-    ): Int = withContext(Dispatchers.IO) {
-        RootShell.runAsRootStreaming(
-            command = command,
-            onStdoutLine = onStdoutLine,
-            onStderrLine = { line ->
-                runCatching {
-                    appendLogText("\n[ERR] $line")
-                }.onFailure { t ->
-                    Log.e(LOGCAT_TAG, "stderr handler crashed", t)
-                }
-            }
-        )
+    private fun handleProbeStderrLine(line: String) {
+        runCatching {
+            appendLogText("\n[ERR] $line")
+        }.onFailure { error ->
+            Log.e(LOGCAT_TAG, "stderr handler crashed", error)
+        }
     }
 
     private fun handleProbeStdoutLine(
@@ -681,7 +617,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val sessionSalt = activeExperimentSessionId ?: "no-session"
         return ProbeAttemptContext(
             sessionDbId = activeExperimentSessionDbId,
-            probeRunId = run?.dbId,
+            probeRunId = run?.id,
             victim = victim,
             moving = isMoving,
             network = captureProbeNetworkSnapshot(appContext, sessionSalt)
@@ -709,7 +645,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         if (event is ProbeCellObservedEvent && change.cellAdded) {
             applyParsedCell(event.parsedCell)
-            rememberRecentTower(event.parsedCell)
             lookupLocationForStructuredCell(event, context)
         }
     }
@@ -719,22 +654,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         assets: ProbeAssets
     ) {
         val responseReceivedAtMillis = System.currentTimeMillis()
+        val context = captureProbeAttemptContext(assets)
 
         val parsed = event.parsedCell
-        val deltaMs = event.deltaMs
         applyParsedCell(parsed)
-        rememberRecentTower(parsed)
 
         viewModelScope.launch {
             runCatching {
                 lookupLocationForParsedCell(
-                    assets = assets,
-                    parsed = parsed,
-                    deltaMs = deltaMs,
-                    probeId = event.callId,
-                    sipStatus = event.status,
-                    inviteMs = event.inviteMs,
-                    prMs = event.prMs,
+                    event = event,
+                    context = context,
                     responseReceivedAtMillis = responseReceivedAtMillis
                 )
             }.onFailure { t ->
@@ -748,17 +677,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         event: ProbeDeltaEventFromNative,
         assets: ProbeAssets
     ) {
+        val context = captureProbeAttemptContext(assets)
         viewModelScope.launch {
             runCatching {
-                recordProbeDeltaSample(
-                    assets = assets,
-                    status = event.status,
-                    deltaMs = event.deltaMs,
-                    inviteMs = event.inviteMs,
-                    prMs = event.prMs
-                )
+                probeResultRepository.recordLegacyDelta(event, context)
             }.onFailure { t ->
-                Log.e(LOGCAT_TAG, "recordProbeDeltaSample crashed", t)
+                Log.e(LOGCAT_TAG, "recordLegacyDelta crashed", t)
                 appendLogText("\n[ERR] delta sample exception: ${t.message ?: t}")
             }
         }
@@ -775,19 +699,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLogText("\n[ERR] structured probe event queue is closed")
         }
         events.structuredEvent?.let { event ->
-            if (event is ProbeProvisionalReceivedEvent && !userStopRequested) {
-                userStopRequested = true
-                RootShell.requestStop()
+            if (event is ProbeProvisionalReceivedEvent &&
+                !probeProcessCoordinator.isUserStopRequested
+            ) {
+                probeProcessCoordinator.requestUserStop()
                 intercarrierStatus = buildIntercarrierTestStatus(event.deltaMs)
             }
             return
         }
         val deltaEvent = events.legacyDeltaEvent ?: return
         handleProbeDeltaEvent(deltaEvent, assets)
-        if (userStopRequested) return
+        if (probeProcessCoordinator.isUserStopRequested) return
 
-        userStopRequested = true
-        RootShell.requestStop()
+        probeProcessCoordinator.requestUserStop()
         intercarrierStatus = buildIntercarrierTestStatus(deltaEvent.deltaMs)
     }
 
@@ -795,104 +719,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         event: ProbeCellObservedEvent,
         context: ProbeAttemptContext
     ) {
-        val parsed = event.parsedCell
-        val payloadUsed = listOf(parsed.toTowerParams())
-
-        appendLogText(
-            """
-
-[Geo] querying Google Geolocation...
-mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
-[Geo] payload towers=1 (latest parsed cell only)
-""".trimIndent()
-        )
-
-        val result = withContext(Dispatchers.IO) {
-            GoogleGeolocationClient.queryByCells(payloadUsed)
-        }
-        val location = result.getOrNull()
-        val error = result.exceptionOrNull()
-        val geolocationStatus = if (location == null) "failure" else "success"
-        val geolocationError = error?.message ?: error?.toString()
-
-        cellLocation = location
-        recordStructuredProbeHistory(
-            event = event,
-            context = context,
-            location = location,
-            payloadUsed = payloadUsed,
-            geolocationStatus = geolocationStatus,
-            geolocationError = geolocationError
-        )
-        appendLogText(
-            if (location != null) {
-                buildGeoSuccessLog(location)
-            } else {
-                "\n[Google Geolocation] 查詢失敗：${geolocationError ?: "unknown error"}"
-            }
-        )
-    }
-
-    private suspend fun recordStructuredProbeHistory(
-        event: ProbeCellObservedEvent,
-        context: ProbeAttemptContext,
-        location: CellLocationResult?,
-        payloadUsed: List<CellTowerParams>,
-        geolocationStatus: String,
-        geolocationError: String?
-    ) {
-        val parsed = event.parsedCell
-        val towersJson = encodeTowers(payloadUsed)
-        val entry = ProbeHistory(
-            mcc = parsed.mcc,
-            mnc = parsed.mnc,
-            lac = parsed.lac,
-            cid = parsed.cid,
-            lat = location?.lat,
-            lon = location?.lon,
-            accuracy = location?.range,
-            timestampMillis = event.responseUnixMs,
-            victim = context.victim,
-            towersCount = payloadUsed.size,
-            towersJson = towersJson,
-            moving = context.moving,
-            deltaMs = event.deltaMs,
-            probeRunId = context.probeRunId
-        )
-
-        val list = historyByVictim.getOrPut(context.victim) { mutableStateListOf() }
-        list.add(0, entry)
-        if (list.size > MAX_IN_MEMORY_HISTORY_PER_VICTIM) {
-            list.removeRange(MAX_IN_MEMORY_HISTORY_PER_VICTIM, list.size)
-        }
-        selectedHistoryVictim = context.victim
-
-        withContext(Dispatchers.IO) {
-            db.historyDao().insert(entry.toEntity())
-        }
-        probeAttemptRepository.updateGeolocation(
-            event = event,
-            context = context,
-            estimatedLat = location?.lat,
-            estimatedLon = location?.lon,
-            estimatedAccuracyM = location?.range,
-            status = geolocationStatus,
-            error = geolocationError
+        appendGeoQueryLog(event.parsedCell)
+        publishRecordedProbeResult(
+            probeResultRepository.recordStructuredCell(event, context)
         )
     }
 
     private suspend fun lookupLocationForParsedCell(
-        assets: ProbeAssets,
-        parsed: ParsedCellFromLog,
-        deltaMs: Long?,
-        probeId: String,
-        sipStatus: Int,
-        inviteMs: Long,
-        prMs: Long,
+        event: ProbeEventFromNative,
+        context: ProbeAttemptContext,
         responseReceivedAtMillis: Long
     ) {
-        val payloadUsed = listOf(parsed.toTowerParams())
+        appendGeoQueryLog(event.parsedCell)
+        publishRecordedProbeResult(
+            probeResultRepository.recordLegacyCell(
+                event = event,
+                context = context,
+                responseReceivedAtMillis = responseReceivedAtMillis
+            )
+        )
+    }
 
+    private fun publishRecordedProbeResult(result: RecordedProbeResult) {
+        cellLocation = result.location
+        val entry = result.history
+        val list = historyByVictim.getOrPut(entry.victim) { mutableStateListOf() }
+        list.add(0, result.history)
+        if (list.size > MAX_IN_MEMORY_HISTORY_PER_VICTIM) {
+            list.removeRange(MAX_IN_MEMORY_HISTORY_PER_VICTIM, list.size)
+        }
+        selectedHistoryVictim = entry.victim
+        appendLogText(buildGeoResultLog(result))
+    }
+
+    private fun appendGeoQueryLog(parsed: ParsedCellFromLog) {
         appendLogText(
             """
 
@@ -901,193 +761,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 [Geo] payload towers=1 (latest parsed cell only)
 """.trimIndent()
         )
-
-        val result = withContext(Dispatchers.IO) {
-            GoogleGeolocationClient.queryByCells(payloadUsed)
-        }
-
-        appendLogText(
-            result.fold(
-                onSuccess = { location ->
-                    cellLocation = location
-                    recordProbeHistory(
-                        assets = assets,
-                        parsed = parsed,
-                        location = location,
-                        payloadUsed = payloadUsed,
-                        deltaMs = deltaMs,
-                        geolocationStatus = "success",
-                        geolocationError = null,
-                        probeId = probeId,
-                        sipStatus = sipStatus,
-                        inviteMs = inviteMs,
-                        prMs = prMs,
-                        responseReceivedAtMillis = responseReceivedAtMillis
-                    )
-                    buildGeoSuccessLog(location)
-                },
-                onFailure = { error ->
-                    cellLocation = null
-                    recordProbeHistory(
-                        assets = assets,
-                        parsed = parsed,
-                        location = null,
-                        payloadUsed = payloadUsed,
-                        deltaMs = deltaMs,
-                        geolocationStatus = "failure",
-                        geolocationError = error.message ?: error.toString(),
-                        probeId = probeId,
-                        sipStatus = sipStatus,
-                        inviteMs = inviteMs,
-                        prMs = prMs,
-                        responseReceivedAtMillis = responseReceivedAtMillis
-                    )
-                    "\n[Google Geolocation] 查詢失敗：${error.message ?: error}"
-                }
-            )
-        )
     }
 
-    private suspend fun recordProbeHistory(
-        assets: ProbeAssets,
-        parsed: ParsedCellFromLog,
-        location: CellLocationResult?,
-        payloadUsed: List<CellTowerParams>,
-        deltaMs: Long?,
-        geolocationStatus: String,
-        geolocationError: String?,
-        probeId: String,
-        sipStatus: Int,
-        inviteMs: Long,
-        prMs: Long,
-        responseReceivedAtMillis: Long
-    ) {
-        val victimKey = currentVictimFromList(assets.workDir)
-            .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
-        val recordedAtMillis = System.currentTimeMillis()
-        val towersJson = encodeTowers(payloadUsed)
-        val movingSnapshot = isMoving
-        val activeSessionSnapshot = activeExperimentSessionDbId
-        val activeProbeRunIdSnapshot = activeProbeRun?.dbId
-        val network = captureProbeNetworkSnapshot(appContext, activeExperimentSessionId ?: "no-session")
-        val entry = ProbeHistory(
-            mcc = parsed.mcc,
-            mnc = parsed.mnc,
-            lac = parsed.lac,
-            cid = parsed.cid,
-            lat = location?.lat,
-            lon = location?.lon,
-            accuracy = location?.range,
-            timestampMillis = recordedAtMillis,
-            victim = victimKey,
-            towersCount = payloadUsed.size,
-            towersJson = towersJson,
-            moving = movingSnapshot,
-            deltaMs = deltaMs,
-            probeRunId = activeProbeRunIdSnapshot
-        )
-
-        val list = historyByVictim.getOrPut(victimKey) { mutableStateListOf() }
-        list.add(0, entry)
-        if (list.size > MAX_IN_MEMORY_HISTORY_PER_VICTIM) {
-            list.removeRange(MAX_IN_MEMORY_HISTORY_PER_VICTIM, list.size)
-        }
-        selectedHistoryVictim = victimKey
-
-        withContext(Dispatchers.IO) {
-            db.historyDao().insert(entry.toEntity())
-            if (activeSessionSnapshot != null) {
-                db.experimentDao().insertSample(
-                    ExperimentSampleEntity(
-                        sessionDbId = activeSessionSnapshot,
-                        recordedAtMillis = recordedAtMillis,
-                        victim = victimKey,
-                        mcc = parsed.mcc,
-                        mnc = parsed.mnc,
-                        lac = parsed.lac,
-                        cid = parsed.cid,
-                        estimatedLat = location?.lat,
-                        estimatedLon = location?.lon,
-                        estimatedAccuracyM = location?.range,
-                        geolocationStatus = geolocationStatus,
-                        geolocationError = geolocationError,
-                        towersCount = payloadUsed.size,
-                        towersJson = towersJson,
-                        moving = movingSnapshot,
-                        deltaMs = deltaMs,
-                        sampleType = "cell",
-                        sipStatus = sipStatus,
-                        inviteMs = inviteMs,
-                        prMs = prMs,
-                        intercarrierCandidate = deltaMs?.let { isIntercarrierDelta(it) },
-                        probeId = probeId,
-                        inviteSentAtMillis = responseReceivedAtMillis - (deltaMs ?: 0L),
-                        responseReceivedAtMillis = responseReceivedAtMillis,
-                        outcome = if (geolocationStatus == "success") "success" else "response_geolocation_failed",
-                        intervalSincePreviousProbeMs = null,
-                        wifiRssiDbm = network.wifiRssiDbm,
-                        wifiFrequencyMhz = network.wifiFrequencyMhz,
-                        wifiLinkSpeedMbps = network.wifiLinkSpeedMbps,
-                        wifiBssidHash = network.wifiBssidHash,
-                        createdAtMillis = recordedAtMillis
-                    )
-                )
-            }
-        }
-    }
-
-    private suspend fun recordProbeDeltaSample(
-        assets: ProbeAssets,
-        status: Int?,
-        deltaMs: Long,
-        inviteMs: Long?,
-        prMs: Long?
-    ) {
-        val activeSessionSnapshot = activeExperimentSessionDbId ?: return
-        val victimKey = currentVictimFromList(assets.workDir)
-            .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
-        val recordedAtMillis = System.currentTimeMillis()
-        val movingSnapshot = isMoving
-        val intervalSincePrevious = probeResponseIntervalTracker.record(recordedAtMillis)
-        val network = captureProbeNetworkSnapshot(appContext, activeExperimentSessionId ?: "no-session")
-
-        withContext(Dispatchers.IO) {
-            db.experimentDao().insertSample(
-                ExperimentSampleEntity(
-                    sessionDbId = activeSessionSnapshot,
-                    recordedAtMillis = recordedAtMillis,
-                    victim = victimKey,
-                    mcc = -1,
-                    mnc = -1,
-                    lac = -1,
-                    cid = -1,
-                    estimatedLat = null,
-                    estimatedLon = null,
-                    estimatedAccuracyM = null,
-                    geolocationStatus = "delta_only",
-                    geolocationError = null,
-                    towersCount = 0,
-                    towersJson = "[]",
-                    moving = movingSnapshot,
-                    deltaMs = deltaMs,
-                    sampleType = "delta",
-                    sipStatus = status,
-                    inviteMs = inviteMs,
-                    prMs = prMs,
-                    intercarrierCandidate = isIntercarrierDelta(deltaMs),
-                    probeId = inviteMs?.let { "invite-$it" },
-                    inviteSentAtMillis = recordedAtMillis - deltaMs,
-                    responseReceivedAtMillis = recordedAtMillis,
-                    outcome = "success",
-                    intervalSincePreviousProbeMs = intervalSincePrevious,
-                    wifiRssiDbm = network.wifiRssiDbm,
-                    wifiFrequencyMhz = network.wifiFrequencyMhz,
-                    wifiLinkSpeedMbps = network.wifiLinkSpeedMbps,
-                    wifiBssidHash = network.wifiBssidHash,
-                    createdAtMillis = recordedAtMillis
-                )
-            )
-        }
+    private fun buildGeoResultLog(result: RecordedProbeResult): String {
+        return result.location?.let(::buildGeoSuccessLog)
+            ?: "\n[Google Geolocation] 查詢失敗：" +
+                (result.geolocationError ?: "unknown error")
     }
 
     private suspend fun loadProbeAssets(): ProbeAssets = withContext(Dispatchers.IO) {
@@ -1103,25 +782,8 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     private suspend fun startProbeRun(assets: ProbeAssets, mode: String) {
         val victimKey = currentVictimFromList(assets.workDir)
             .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
-        val now = System.currentTimeMillis()
-        val run = ProbeRunEntity(
-            victim = victimKey,
-            mode = mode,
-            startedAtMillis = now,
-            endedAtMillis = null,
-            exitCode = null,
-            stoppedByUser = false,
-            createdAtMillis = now
-        )
-        val runId = withContext(Dispatchers.IO) {
-            db.probeRunDao().insert(run)
-        }
-        val savedRun = run.copy(id = runId)
-        activeProbeRun = ActiveProbeRun(
-            dbId = runId,
-            victim = victimKey,
-            startedAtMillis = now
-        )
+        val savedRun = probeRunRepository.start(victimKey, mode)
+        activeProbeRun = savedRun
         val list = probeRunsByVictim.getOrPut(victimKey) { mutableStateListOf() }
         list.add(savedRun)
         if (list.size > MAX_IN_MEMORY_RUNS_PER_VICTIM) {
@@ -1129,27 +791,14 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
     }
 
-    private suspend fun endProbeRun(exitCode: Int?) {
+    private suspend fun endProbeRun(exitCode: Int?, stoppedByUser: Boolean) {
         val run = activeProbeRun ?: return
         activeProbeRun = null
-        val endedAtMillis = System.currentTimeMillis()
-        val stoppedByUserSnapshot = userStopRequested
-        withContext(Dispatchers.IO) {
-            db.probeRunDao().endRun(
-                id = run.dbId,
-                endedAtMillis = endedAtMillis,
-                exitCode = exitCode,
-                stoppedByUser = stoppedByUserSnapshot
-            )
-        }
+        val endedRun = probeRunRepository.end(run, exitCode, stoppedByUser)
         val list = probeRunsByVictim[run.victim] ?: return
-        val index = list.indexOfFirst { it.id == run.dbId }
+        val index = list.indexOfFirst { it.id == run.id }
         if (index >= 0) {
-            list[index] = list[index].copy(
-                endedAtMillis = endedAtMillis,
-                exitCode = exitCode,
-                stoppedByUser = stoppedByUserSnapshot
-            )
+            list[index] = endedRun
         }
     }
 
@@ -1172,14 +821,14 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         return command.replace(Regex("GOOGLE_API_KEY='[^']*'"), "GOOGLE_API_KEY='***'")
     }
 
-    private fun appendProcessDone(exitCode: Int) {
+    private fun appendProcessDone(exitCode: Int, stoppedByUser: Boolean) {
         appendLogText(
             buildString {
                 appendLine()
                 appendLine()
                 appendLine("----- PROCESS DONE -----")
                 appendLine("Exit code: $exitCode")
-                if (userStopRequested) {
+                if (stoppedByUser) {
                     appendLine("(Stopped by user)")
                 }
             }
@@ -1205,15 +854,6 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
     }
 
-    private fun computeAutoRestartBackoffMs(retryCount: Int): Long {
-        val exponent = (retryCount - 1).coerceIn(0, 4)
-        var delayMs = AUTO_RESTART_BASE_BACKOFF_MS
-        repeat(exponent) {
-            delayMs = (delayMs * 2).coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
-        }
-        return delayMs.coerceAtMost(AUTO_RESTART_MAX_BACKOFF_MS)
-    }
-
     private fun applyParsedCell(parsed: ParsedCellFromLog) {
         applyParsedCell(parsed.mcc, parsed.mnc, parsed.lac, parsed.cid)
     }
@@ -1225,33 +865,15 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         cidInput = cid.toString()
     }
 
-    private fun rememberRecentTower(parsed: ParsedCellFromLog) {
-        val tower = parsed.toTowerParams()
-        recentTowers.removeAll { existing ->
-            existing.cid == tower.cid &&
-                existing.mcc == tower.mcc &&
-                existing.mnc == tower.mnc &&
-                existing.lac == tower.lac
-        }
-        recentTowers.add(0, tower)
-        if (recentTowers.size > 5) {
-            recentTowers.removeAt(recentTowers.lastIndex)
-        }
-    }
-
     private fun stopCurrentRun(logMessage: String) {
-        userStopRequested = true
-        RootShell.requestStop()
+        probeProcessCoordinator.requestUserStop()
         appendLogText(logMessage)
     }
 
     private suspend fun loadHistory() {
-        val dao = db.historyDao()
-        val loaded = withContext(Dispatchers.IO) {
-            dao.getVictims().associateWith { victim ->
-                dao.getRecentHistoryForVictim(victim, MAX_IN_MEMORY_HISTORY_PER_VICTIM).map { it.toDomain() }
-            }
-        }
+        val loaded = probeResultRepository.loadRecentHistoryByVictim(
+            MAX_IN_MEMORY_HISTORY_PER_VICTIM
+        )
 
         historyByVictim.clear()
         loaded.forEach { (victim, list) ->
@@ -1261,23 +883,12 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private suspend fun loadProbeRuns() {
-        val dao = db.probeRunDao()
-        val loaded = withContext(Dispatchers.IO) {
-            dao.getVictims().associateWith { victim ->
-                dao.getRecentRunsForVictim(victim, MAX_IN_MEMORY_RUNS_PER_VICTIM)
-            }
-        }
+        val loaded = probeRunRepository.loadRecentByVictim(MAX_IN_MEMORY_RUNS_PER_VICTIM)
 
         probeRunsByVictim.clear()
         loaded.forEach { (victim, list) ->
             probeRunsByVictim[victim] = mutableStateListOf<ProbeRunEntity>().apply { addAll(list) }
         }
-    }
-
-    private fun generateTimestampSessionId(nowMillis: Long): String {
-        return Instant.ofEpochMilli(nowMillis)
-            .atZone(ZoneId.systemDefault())
-            .format(SESSION_ID_FORMATTER)
     }
 
     private fun startProbeForegroundService(mode: String) {
@@ -1296,10 +907,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private suspend fun loadActiveExperimentSession() {
-        val active = withContext(Dispatchers.IO) {
-            db.experimentDao().getActiveSession()
-        }
-        applyActiveExperimentSession(active)
+        applyActiveExperimentSession(experimentSessionRepository.loadActive())
     }
 
     private fun applyActiveExperimentSession(session: ExperimentSessionEntity?) {
@@ -1448,8 +1056,4 @@ private fun timelineTypeOrder(type: CellMapTimelineItemType): Int {
         CellMapTimelineItemType.ProbePoint -> 1
         CellMapTimelineItemType.ProbeStop -> 2
     }
-}
-
-private fun ParsedCellFromLog.toTowerParams(): CellTowerParams {
-    return CellTowerParams(mcc = mcc, mnc = mnc, lac = lac, cid = cid, radioType = "lte")
 }
