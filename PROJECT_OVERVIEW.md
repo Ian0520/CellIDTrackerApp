@@ -10,27 +10,29 @@
 
 ```
 [Android App (Compose UI)]
-   |-- Probe Runner (RootShell, assets)
-   |-- Log Parser (MCC/MNC/LAC/CID)
-   |-- Inter-carrier Detector (delta_ms)
-   |-- Geolocation Client (Google API)
+   |-- MainViewModel (UI state and actions)
+   |-- ProbeProcessCoordinator (process/watchdog/restart)
+   |-- ProbeStreamSession (event protocol/reduction/deduplication)
+   |-- Repositories (attempt/result/run/session persistence)
+   |-- Google Geolocation Client
+   |-- Room Database
    |-- Map Viewer (osmdroid)
-   |-- History Manager (in-memory)
-            |
+            | root process
             v
 [Native Probe Binary (C++ / SIP)]
    |-- SIP INVITE / CANCEL
    |-- Cell ID Extraction
-   |-- Inter-carrier timing log
+   |-- Versioned JSONL probe events
 ```
 
 Module Breakdown:
-- UI/UX (Compose): controls, status, map, history, logs.
-- Probe Runner: copies binary/config from assets and executes as root.
-- Parser: streams stdout and extracts cell tower info.
-- Geolocation Client: calls Google Geolocation API (supports multi-tower).
-- Inter‑carrier Detector: uses SIP timing delta to classify.
-- Native Probe: SIP handling + cell extraction.
+- UI/UX (Compose): controls, status, map, history, and bounded logs.
+- ViewModel: exposes UI state and delegates application work.
+- Process coordinator: executes the root process and owns watchdog/restart policy.
+- Stream session: parses structured events and suppresses legacy persistence after `stream_ready`.
+- Repositories: persist probe attempts, results, runs, and experiment sessions.
+- Geolocation client: resolves the latest accepted cell through Google Geolocation.
+- Native probe: handles SIP transactions, timing, and cellular header extraction.
 
 ## Tech Stack
 
@@ -41,7 +43,7 @@ Module Breakdown:
 | Networking | OkHttp (app), libcurl + mbedtls (native) | Stable HTTP clients |
 | Map | osmdroid | Open-source, easy circle overlay |
 | Build | Gradle (KTS) | Standard Android tooling |
-| Database | None | History stored in memory |
+| Database | Room/SQLite | Durable history, attempts, runs, and experiment sessions |
 
 ## Functional Specifications
 Main Features:
@@ -65,9 +67,9 @@ Input victim → Probe → root binary → parse cell info
 ## Data & API Design
 Data:
 - `victim_list` file for the probe binary.
-- `recentTowers` (in‑memory, up to 5).
-- `history` (in‑memory).
-- No database/server.
+- `probe_history`, `probe_attempts`, `probe_runs`, `experiment_sessions`, and `experiment_samples` Room tables.
+- Bounded in-memory history and run projections used by the Compose UI.
+- JSON experiment-session and history exports; no application server.
 
 API (Google Geolocation):
 - Endpoint: `POST https://www.googleapis.com/geolocation/v1/geolocate?key=...`
@@ -96,8 +98,9 @@ API (Google Geolocation):
 
 ## Implementation Details
 - Cell ID parsing: real‑time stdout parsing updates UI.
-- Multi‑tower geolocation: last 5 towers are sent to improve stability.
-- Inter‑carrier detection: measure delta between `100 Trying` and first provisional response (`180/183`).
+- Experiment geolocation: only the latest accepted cell is sent per probe result.
+- Probe latency: measured natively from fresh INVITE transmission to the first matching provisional response (`180/183`) using a monotonic clock.
+- Inter‑carrier detection: classifies the native INVITE-to-provisional `delta_ms`.
   - `<= 525 ms` → inter‑carrier.
   - UI shows a unified “Inter‑carrier:” line.
 - Stability: coroutine-based streaming avoids UI blocking.
@@ -142,7 +145,6 @@ Challenges & Solutions:
 - Inter‑carrier detection: implemented timing rules from SIP responses.
 
 Future Work:
-- Persist history (Room/SQLite).
 - Multi‑target management.
 - Stronger error classification when probe fails.
 - Deeper analytics on probe results.

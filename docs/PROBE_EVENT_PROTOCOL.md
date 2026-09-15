@@ -48,6 +48,8 @@ Legacy `[intercarrier]` and `[probe_event]` lines remain in stdout for diagnosti
 
 - `ProbeStreamSession` owns one native process stream: protocol selection, legacy deduplication, ordered event reduction, and attempt context lifetime.
 - `ProbeAttemptRepository` maps reduced attempt changes to Room writes and maintains the interval between accepted responses.
-- `MainViewModel` coordinates process lifecycle and UI state, then delegates parsed stream and persistence work to those components.
+- `ProbeProcessCoordinator` owns process execution, watchdogs, controlled restarts, backoff, and user-stop state.
+- `ProbeResultRepository`, `ProbeRunRepository`, and `ExperimentSessionRepository` own result, run, and session persistence respectively.
+- `MainViewModel` owns Compose-facing state and delegates process and persistence work to those components.
 
 Create a new `ProbeStreamSession` for every native process restart. Never reuse reducer or deduplication state across process invocations.
