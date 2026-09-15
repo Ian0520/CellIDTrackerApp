@@ -47,7 +47,7 @@ From the repository root:
 ./scripts/test-native-contract.sh
 ```
 
-These tests exercise the structured event contract, SIP response parser, response state machine, and watchdog policy without sending network traffic.
+These tests exercise the structured event contract, SIP response parser, response state machine, watchdog policy, and CLI mode selection without sending network traffic.
 
 ### 2.4 Probe Runtime Boundaries
 
@@ -55,6 +55,8 @@ These tests exercise the structured event contract, SIP response parser, respons
 - `probe_state_machine` converts SIP response status and retry context into ordered state transitions.
 - `sip_response` parses SIP identifiers, response metadata, and cellular information.
 - `Session` owns packet/ESP transport, monotonic latency timestamps, and structured event emission.
+- `NativeRunMode` resolves CLI flags to one deterministic mode using the previous precedence order.
+- `application.cpp` contains the active probe integration; `legacy_application.cpp` contains CLI-only workflows.
 
 ## 3. Install
 ### 3.1 Connect Device

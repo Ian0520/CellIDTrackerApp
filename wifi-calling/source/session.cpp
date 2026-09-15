@@ -66,7 +66,7 @@ namespace {
   }
 
   void emitAttemptStartedAfterTiming(State& state) {
-    if (!util::context.remoteCellIDProber ||
+    if (!isRemoteProbeMode(util::context.runMode) ||
         state.attemptStartedEmitted ||
         state.activeInviteCallId.empty() ||
         !state.t_invite.has_value()) {
@@ -142,7 +142,7 @@ void Session::run(ESPConfig&& cfg, Application& application) {
 
 
   std::cout << "\nReady to run attacks\n" << std::endl;
-  if (util::context.remoteCellIDProber) {
+  if (isRemoteProbeMode(util::context.runMode)) {
     std::cout << probe_event::streamReady() << std::endl;
   }
   std::ifstream ifs(util::context.calleeId);
@@ -190,25 +190,11 @@ void Session::run(ESPConfig&& cfg, Application& application) {
 
   
   
-  if (util::context.remoteCellIDProber) {
+  if (isRemoteProbeMode(util::context.runMode)) {
     std::cout << "Launch remote Cell ID prober" << std::endl;
     application.CallDoS(pfd, nReady, victimList[0]);
-  } else if (util::context.localCellIDProber) {
-    std::cout << "Launch local Cell ID prober" << std::endl;
-    application.startRemoteCallServer(pfd, nReady, victimList);
-  } else if (util::context.rlRemoteCellIDProber) {
-    std::cout << "Launch RL-assisted Remote Cell ID prober" << std::endl;
-    application.startRemoteCallServer(pfd, nReady, victimList);
-  } else if (util::context.unavailabilityEval) {
-    while(true) {
-      std::cout << "Eval one call unavailability" << std::endl;
-      application.CallDoS(pfd, nReady, victimList[0]);
-    }
-  } else if (util::context.detectEval) {
-    for (auto i = 0 ; i < 15 ; i++) {
-      std::cout << "Eval one call detect" << std::endl;
-      application.CallDetect(pfd, nReady, victimList[0]);
-    }
+  } else {
+    application.runLegacyMode(pfd, nReady, victimList);
   }
 
 }
@@ -411,7 +397,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     }
   }
 
-  if (!util::context.remoteCellIDProber) {
+  if (!isRemoteProbeMode(util::context.runMode)) {
     // Keep legacy cellular extraction behavior for non-probe-app modes.
     Application::extractCellularInfo(fullbody, state.calleeId);
   }
@@ -472,7 +458,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
         const auto prMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count();
         state.firstProvisionalUnixMs = state.inviteUnixMs + delta;
         std::cout << "[intercarrier] status=183 delta_ms=" << delta << " invite=" << inviteMs << " pr=" << prMs << std::endl;
-        if (util::context.remoteCellIDProber) {
+        if (isRemoteProbeMode(util::context.runMode)) {
           std::cout << probe_event::provisionalReceived(
               state.activeInviteCallId,
               183,
@@ -513,7 +499,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
         const auto prMs = std::chrono::duration_cast<std::chrono::milliseconds>(state.t_pr->time_since_epoch()).count();
         state.firstProvisionalUnixMs = state.inviteUnixMs + delta;
         std::cout << "[intercarrier] status=180 delta_ms=" << delta << " invite=" << inviteMs << " pr=" << prMs << std::endl;
-        if (util::context.remoteCellIDProber) {
+        if (isRemoteProbeMode(util::context.runMode)) {
           std::cout << probe_event::provisionalReceived(
               state.activeInviteCallId,
               180,
@@ -546,7 +532,7 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
     state.retryImmediate = true;
   }
 
-  if (util::context.remoteCellIDProber &&
+  if (isRemoteProbeMode(util::context.runMode) &&
       !state.probeEventEmitted &&
       parsedCellInfo.has_value() &&
       state.t_invite.has_value() &&

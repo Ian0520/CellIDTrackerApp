@@ -156,13 +156,13 @@ void ProbeController::run(
           session.state.sessionProgressCount[session.state.calleeId]++;
           session.setSipState(SipState::PRACK, "session progress received");
 
-          if (util::context.remoteCellIDProber) {
+          if (isRemoteProbeMode(util::context.runMode)) {
             session.currentSipApp = SipApp::DOS;
           }
 
           if (session.state.sessionProgressCount[session.state.calleeId] >=
                   session.state.maxSessionProgressOfCarrier ||
-              util::context.unavailabilityEval) {
+              util::context.runMode == NativeRunMode::UNAVAILABILITY_EVALUATION) {
             session.state.sessionProgressCount[session.state.calleeId] = 0;
 
             if (util::context.verbose > 1) std::cout << "SEND CANCEL" << std::endl;

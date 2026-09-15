@@ -20,9 +20,11 @@
             | root process
             v
 [Native Probe Binary (C++ / SIP)]
+   |-- NativeRunMode (single CLI mode selection)
    |-- ProbeController (continuous INVITE/CANCEL loop)
    |-- SIP response parser + response state machine
    |-- Session (packet/ESP transport and native timing)
+   |-- Legacy application module (CLI-only workflows)
    |-- Cell ID extraction
    |-- Versioned JSONL probe events
 ```
@@ -37,6 +39,8 @@ Module Breakdown:
 - Native probe controller: owns the continuous probe transaction loop, watchdog actions, and minimum INVITE interval.
 - Native SIP parser/state machine: parses response metadata and makes host-tested state-transition decisions.
 - Native session: owns packet decoding/encoding, native monotonic timing, stale-transaction rejection, and event emission.
+- Native run mode: resolves CLI flags to one deterministic mode; the Android app requests only remote probe mode.
+- Legacy native application: contains the server, adaptive, detection, evaluation, and native-geolocation workflows outside the active application module.
 
 ## Tech Stack
 
@@ -44,7 +48,7 @@ Module Breakdown:
 | --- | --- | --- |
 | Frontend | Kotlin + Jetpack Compose | Native Android UI, rapid iteration |
 | Native/Low‑level | C++ / NDK / CMake | SIP probe needs low-level control |
-| Networking | OkHttp (app), libcurl + mbedtls (native) | Stable HTTP clients |
+| Networking | OkHttp (app), libcurl + mbedtls (legacy native modes) | Stable HTTP clients |
 | Map | osmdroid | Open-source, easy circle overlay |
 | Build | Gradle (KTS) | Standard Android tooling |
 | Database | Room/SQLite | Durable history, attempts, runs, and experiment sessions |
@@ -153,4 +157,4 @@ Future Work:
 - Multi‑target management.
 - Stronger error classification when probe fails.
 - Deeper analytics on probe results.
-- Isolate or remove legacy native server, adaptive-prediction, and native-geolocation modes after confirming they are no longer required.
+- Confirm whether the isolated legacy native modes are still required, then remove unused modes and their dependencies.

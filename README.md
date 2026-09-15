@@ -44,6 +44,7 @@ The build injects it into `BuildConfig.GOOGLE_API_KEY`; the app and bundled prob
 
 ## Notes
 - On first run, the app copies `probe/<abi>/spoof` and `config/...` from assets into its private storage and executes the probe via root.
+- The Android app invokes only the native remote-probe mode; other native CLI workflows are isolated from the active application source.
 - Map uses osmdroid; deprecation warnings are cosmetic.
 - History records time and victim; it is not segmented per target unless you clear it manually.
 

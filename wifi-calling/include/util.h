@@ -11,6 +11,8 @@
 #include <regex>
 #include <optional>
 
+#include "native_run_mode.h"
+
 #define MAX_NUMBERS 5
 #define VICTIM_LIST "victim_list"
 
@@ -25,11 +27,7 @@ namespace util {
     int verbose = 0;
     bool shouldStop = false;
 
-    bool remoteCellIDProber = false;
-    bool localCellIDProber = false;
-    bool rlRemoteCellIDProber = false;
-    bool unavailabilityEval = false;
-    bool detectEval = false;
+    NativeRunMode runMode = NativeRunMode::NONE;
     int probeIntervalSeconds = 30;
     // Zero keeps the empirically determined per-carrier default.
     int sessionProgressResponseLimit = 0;

@@ -1,13 +1,13 @@
 #pragma once
 
+#include <poll.h>
+
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <vector>
-#include <poll.h>
-#include <curl/curl.h>
-#include <nlohmann/json.hpp>
 
 #include "sip.h"
 #include "session.h"
@@ -31,17 +31,7 @@ public:
     : session(session), lastLineIndex(0), isProbePredicted(false), adateToNewEnvironment(false) {
   }
 
-  ~Application() {
-    namespace fs = std::filesystem;
-    for (const auto& entry : fs::directory_iterator(fs::current_path())) {
-
-      auto fn = entry.path().filename().string();
-      if (fn.rfind("User_Hand_", 0) == 0 && entry.path().extension() == ".txt") {
-        fs::remove(entry.path());
-      }
-      
-    }
-  }
+  ~Application();
 
   static std::string getFormattedAddress(const std::string& response);
   static std::string getReverseGeoCoding(const std::string& latAndlng);
@@ -58,6 +48,10 @@ public:
   void startPeriodicUpload(int seconds);
   bool uploadAdaptiveCellularInfo();
   bool handleIncomingPackets(const int nReady);
+  void runLegacyMode(
+      pollfd& pfd,
+      int nReady,
+      const std::vector<std::string>& victimList);
 
   void CallDetect(pollfd& pfd, int nReady, const std::string& calleeId);
   void MultiCallDetect(pollfd& pfd, int nReady, const std::vector<std::string>& victimList);
