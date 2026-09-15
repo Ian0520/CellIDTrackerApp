@@ -20,8 +20,10 @@
             | root process
             v
 [Native Probe Binary (C++ / SIP)]
-   |-- SIP INVITE / CANCEL
-   |-- Cell ID Extraction
+   |-- ProbeController (continuous INVITE/CANCEL loop)
+   |-- SIP response parser + response state machine
+   |-- Session (packet/ESP transport and native timing)
+   |-- Cell ID extraction
    |-- Versioned JSONL probe events
 ```
 
@@ -32,7 +34,9 @@ Module Breakdown:
 - Stream session: parses structured events and suppresses legacy persistence after `stream_ready`.
 - Repositories: persist probe attempts, results, runs, and experiment sessions.
 - Geolocation client: resolves the latest accepted cell through Google Geolocation.
-- Native probe: handles SIP transactions, timing, and cellular header extraction.
+- Native probe controller: owns the continuous probe transaction loop, watchdog actions, and minimum INVITE interval.
+- Native SIP parser/state machine: parses response metadata and makes host-tested state-transition decisions.
+- Native session: owns packet decoding/encoding, native monotonic timing, stale-transaction rejection, and event emission.
 
 ## Tech Stack
 
@@ -100,6 +104,7 @@ API (Google Geolocation):
 - Cell ID parsing: real‑time stdout parsing updates UI.
 - Experiment geolocation: only the latest accepted cell is sent per probe result.
 - Probe latency: measured natively from fresh INVITE transmission to the first matching provisional response (`180/183`) using a monotonic clock.
+- Native response handling: pure host tests cover `180`, `181`, `183`, `200`, `401`, `407`, `408`, `481`, `486`, `487`, and `500`, including retry precedence.
 - Inter‑carrier detection: classifies the native INVITE-to-provisional `delta_ms`.
   - `<= 525 ms` → inter‑carrier.
   - UI shows a unified “Inter‑carrier:” line.
@@ -148,3 +153,4 @@ Future Work:
 - Multi‑target management.
 - Stronger error classification when probe fails.
 - Deeper analytics on probe results.
+- Isolate or remove legacy native server, adaptive-prediction, and native-geolocation modes after confirming they are no longer required.

@@ -46,6 +46,10 @@ Legacy `[intercarrier]` and `[probe_event]` lines remain in stdout for diagnosti
 
 ### Code ownership
 
+- Native `sip_response` converts raw SIP payloads into typed response metadata and applies the existing Call-ID/Via-branch stale-response rule.
+- Native `probe_state_machine` owns response-driven state decisions; it does not perform packet I/O or calculate latency.
+- Native `probe_loop_policy` owns watchdog thresholds, while `ProbeController` executes the continuous transaction loop.
+- Native `Session` retains packet decoding/encoding, INVITE/provisional timestamp capture, and structured event emission.
 - `ProbeStreamSession` owns one native process stream: protocol selection, legacy deduplication, ordered event reduction, and attempt context lifetime.
 - `ProbeAttemptRepository` maps reduced attempt changes to Room writes and maintains the interval between accepted responses.
 - `ProbeProcessCoordinator` owns process execution, watchdogs, controlled restarts, backoff, and user-stop state.
@@ -53,3 +57,7 @@ Legacy `[intercarrier]` and `[probe_event]` lines remain in stdout for diagnosti
 - `MainViewModel` owns Compose-facing state and delegates process and persistence work to those components.
 
 Create a new `ProbeStreamSession` for every native process restart. Never reuse reducer or deduplication state across process invocations.
+
+## Native Host Tests
+
+Run `./scripts/test-native-contract.sh` from the repository root. The suite verifies the JSONL contract, SIP metadata and cell parsing, stale transaction matching, response-state decisions, and watchdog boundaries without requiring an Android device or live network.

@@ -15,6 +15,8 @@
 
 using SipPair = std::pair<std::shared_ptr<SipMessage>, std::shared_ptr<SipMessage>>;
 
+class ProbeController;
+
 struct cellInformation {
   std::string networkType;
   std::string cellIdentity;
@@ -63,6 +65,8 @@ public:
   void MultiCallDoS(pollfd& pfd, int nReady, const std::vector<std::string>& victimList);
 
 private:
+  friend class ProbeController;
+
   static std::string extractCallIdFromSip(const std::string& sip);
   static std::string extractBranchFromSip(const std::string& sip);
   void prepareFreshInvite(SipMessage& sip);
