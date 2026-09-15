@@ -43,3 +43,11 @@ Unix timestamps are correlation metadata. They must not be used to recalculate l
 The app reduces all events with the same `attempt_id` into one in-memory snapshot and one `probe_attempts` database row. Repeated or conflicting copies do not create changes. A cell observation starts one geolocation request and one history entry at most.
 
 Legacy `[intercarrier]` and `[probe_event]` lines remain in stdout for diagnostics and compatibility with older packaged binaries. After `stream_ready`, the app displays but does not persist those legacy lines.
+
+### Code ownership
+
+- `ProbeStreamSession` owns one native process stream: protocol selection, legacy deduplication, ordered event reduction, and attempt context lifetime.
+- `ProbeAttemptRepository` maps reduced attempt changes to Room writes and maintains the interval between accepted responses.
+- `MainViewModel` coordinates process lifecycle and UI state, then delegates parsed stream and persistence work to those components.
+
+Create a new `ProbeStreamSession` for every native process restart. Never reuse reducer or deduplication state across process invocations.
