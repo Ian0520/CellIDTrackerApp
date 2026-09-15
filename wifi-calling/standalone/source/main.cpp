@@ -71,11 +71,13 @@ int main(int argc, char* argv[]) {
 
 
   // Initialize context
-  util::context.remoteCellIDProber = result["remote-cellid-prober"].as<bool>();
-  util::context.localCellIDProber = result["local-cellid-prober"].as<bool>();
-  util::context.rlRemoteCellIDProber = result["rl-assisted-remote-cellid-prober"].as<bool>();
-  util::context.unavailabilityEval = result["unavailability-eval"].as<bool>();
-  util::context.detectEval = result["detect-eval"].as<bool>();
+  util::context.runMode = selectNativeRunMode({
+      .remoteProbe = result["remote-cellid-prober"].as<bool>(),
+      .localServer = result["local-cellid-prober"].as<bool>(),
+      .adaptiveRemoteServer =
+          result["rl-assisted-remote-cellid-prober"].as<bool>(),
+      .unavailabilityEvaluation = result["unavailability-eval"].as<bool>(),
+      .detectionEvaluation = result["detect-eval"].as<bool>()});
   util::context.probeIntervalSeconds = readProbeIntervalSeconds();
   util::context.sessionProgressResponseLimit = result["session-progress-response-limit"].as<int>();
   if (util::context.sessionProgressResponseLimit < 0 || util::context.sessionProgressResponseLimit > 20) {

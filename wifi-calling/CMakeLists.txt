@@ -67,16 +67,31 @@ CPMAddPackage(
 
 # ---- Add source files ----
 
-# Note: globbing sources is considered bad practice as CMake's generators may not detect new files
-# automatically. Keep that in mind when changing files, or explicitly mention them here.
-file(GLOB_RECURSE headers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
-file(GLOB_RECURSE sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp")
+set(active_sources
+  source/application.cpp
+  source/encoder.cpp
+  source/iface.cpp
+  source/native_run_mode.cpp
+  source/probe_controller.cpp
+  source/probe_event.cpp
+  source/probe_loop_policy.cpp
+  source/probe_state_machine.cpp
+  source/sadb.cpp
+  source/session.cpp
+  source/sip.cpp
+  source/sip_response.cpp
+  source/util.cpp
+)
+
+set(legacy_sources
+  source/legacy_application.cpp
+)
 
 # ---- Create library ----
 
 # Note: for header-only libraries change all PUBLIC flags to INTERFACE and create an interface
 # target: add_library(${PROJECT_NAME} INTERFACE)
-add_library(${PROJECT_NAME} ${headers} ${sources})
+add_library(${PROJECT_NAME} ${active_sources} ${legacy_sources})
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20)
 
 # being a cross-platform target, we enforce standards conformance on MSVC

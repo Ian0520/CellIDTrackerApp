@@ -50,6 +50,8 @@ Legacy `[intercarrier]` and `[probe_event]` lines remain in stdout for diagnosti
 - Native `probe_state_machine` owns response-driven state decisions; it does not perform packet I/O or calculate latency.
 - Native `probe_loop_policy` owns watchdog thresholds, while `ProbeController` executes the continuous transaction loop.
 - Native `Session` retains packet decoding/encoding, INVITE/provisional timestamp capture, and structured event emission.
+- Native `NativeRunMode` resolves overlapping CLI flags to one mode using the historical precedence order.
+- Native `application.cpp` contains the active probe integration; CLI-only workflows are isolated in `legacy_application.cpp`.
 - `ProbeStreamSession` owns one native process stream: protocol selection, legacy deduplication, ordered event reduction, and attempt context lifetime.
 - `ProbeAttemptRepository` maps reduced attempt changes to Room writes and maintains the interval between accepted responses.
 - `ProbeProcessCoordinator` owns process execution, watchdogs, controlled restarts, backoff, and user-stop state.
@@ -60,4 +62,4 @@ Create a new `ProbeStreamSession` for every native process restart. Never reuse 
 
 ## Native Host Tests
 
-Run `./scripts/test-native-contract.sh` from the repository root. The suite verifies the JSONL contract, SIP metadata and cell parsing, stale transaction matching, response-state decisions, and watchdog boundaries without requiring an Android device or live network.
+Run `./scripts/test-native-contract.sh` from the repository root. The suite verifies the JSONL contract, SIP metadata and cell parsing, stale transaction matching, response-state decisions, watchdog boundaries, and native mode selection without requiring an Android device or live network.

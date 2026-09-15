@@ -39,3 +39,12 @@ add_executable(
 target_include_directories(probe_loop_policy_test PRIVATE ../include)
 target_compile_features(probe_loop_policy_test PRIVATE cxx_std_20)
 add_test(NAME probe_loop_policy_test COMMAND probe_loop_policy_test)
+
+add_executable(
+  native_run_mode_test
+  native_run_mode_test.cpp
+  ../source/native_run_mode.cpp
+)
+target_include_directories(native_run_mode_test PRIVATE ../include)
+target_compile_features(native_run_mode_test PRIVATE cxx_std_20)
+add_test(NAME native_run_mode_test COMMAND native_run_mode_test)

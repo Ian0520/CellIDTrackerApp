@@ -806,7 +806,7 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val responseLimitArgument = sessionProgressResponseLimit
             ?.let { " --session-progress-response-limit $it" }
             .orEmpty()
-        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r -d --verbose 1$responseLimitArgument"
+        return "cd ${assets.workDir.absolutePath} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r --verbose 1$responseLimitArgument"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {
