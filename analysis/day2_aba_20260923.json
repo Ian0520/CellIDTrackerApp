@@ -1,0 +1,36 @@
+{
+  "campaignId": "sipobs_20260923",
+  "reportTitle": "Day 2 Caller-Side SIP Observability Analysis",
+  "primaryAttemptsPerBlock": 30,
+  "maxGroundTruthGapMs": 1000,
+  "bootstrapIterations": 20000,
+  "permutationIterations": 50000,
+  "randomSeed": 20260923,
+  "blocks": [
+    {
+      "label": "A1",
+      "conditionLabel": "day2_A1_normal",
+      "callerSessionId": "20260923_125950_166",
+      "groundTruthFile": "20260923_125947_896.json",
+      "networkName": "University Wi-Fi",
+      "primaryWifiFrequencyMhz": 5700
+    },
+    {
+      "label": "B",
+      "conditionLabel": "day2_B_normal_correct",
+      "groundTruthConditionLabel": "day2_B_correct",
+      "callerSessionId": "20260923_131519_684",
+      "groundTruthFile": "20260923_131517_313.json",
+      "networkName": "Phone hotspot",
+      "primaryWifiFrequencyMhz": 5785
+    },
+    {
+      "label": "A2",
+      "conditionLabel": "day2_A2_normal",
+      "callerSessionId": "20260923_132305_627",
+      "groundTruthFile": "20260923_132303_646.json",
+      "networkName": "University Wi-Fi",
+      "primaryWifiFrequencyMhz": 5700
+    }
+  ]
+}
