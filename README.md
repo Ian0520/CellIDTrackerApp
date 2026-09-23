@@ -89,3 +89,5 @@ Schema 4 exports one record per native INVITE attempt, including attempts withou
 The current fixed campaign settings are a **10-second minimum INVITE interval**, **one provisional response**, and auto-restart enabled. Both apps automatically create and retain a daily-formatted campaign ID; verify the values match once, then assign a unique condition label to every experimental block.
 
 Raw SIP evidence remains in app-private storage. `Stop & export` writes a sanitized research directory beside the normal session export. Follow [`docs/SIP_OBSERVABILITY_EXPERIMENT.md`](docs/SIP_OBSERVABILITY_EXPERIMENT.md) for the A-B-A procedure, naming rules, extraction, and validity checks.
+
+The follow-up [cell sequence study](docs/CELL_SEQUENCE_STUDY.md) measures what one cell per attempt and the sequence of attempts reveal. Its offline tools report stationary false-change controls and score empirical one-cell areas on separate-day target GPS. Private captures and per-attempt locations remain ignored under `captures/`.

@@ -26,6 +26,28 @@ data class CellTowerParams(
     val radioType: String = "lte"
 )
 
+internal fun buildGeolocationPayload(towers: List<CellTowerParams>): JSONObject {
+    require(towers.isNotEmpty()) { "No cell towers provided" }
+    val radioType = towers.first().radioType.lowercase()
+    require(towers.all { it.radioType.equals(radioType, ignoreCase = true) }) {
+        "A Geolocation request needs one radioType for all cell towers"
+    }
+    return JSONObject().apply {
+        put("radioType", radioType)
+        put("considerIp", false)
+        put("cellTowers", JSONArray().apply {
+            towers.forEach { tower ->
+                put(JSONObject().apply {
+                    put("mobileCountryCode", tower.mcc)
+                    put("mobileNetworkCode", tower.mnc)
+                    put("locationAreaCode", tower.lac)
+                    put("cellId", tower.cid)
+                })
+            }
+        })
+    }
+}
+
 object GoogleGeolocationClient {
 
     private val API_KEY: String = BuildConfig.GOOGLE_API_KEY
@@ -64,22 +86,7 @@ object GoogleGeolocationClient {
             val url =
                 "https://www.googleapis.com/geolocation/v1/geolocate?key=$API_KEY"
 
-            // 建 request JSON
-            val root = JSONObject().apply {
-                put("considerIp", false)
-                val arr = JSONArray()
-                towers.forEach { t ->
-                    arr.put(JSONObject().apply {
-                        put("mobileCountryCode", t.mcc)
-                        put("mobileNetworkCode", t.mnc)
-                        put("locationAreaCode", t.lac)
-                        put("cellId", t.cid)
-                        put("radioType", t.radioType)
-                    })
-                }
-                put("cellTowers", arr)
-            }
-            val requestJson = root.toString()
+            val requestJson = buildGeolocationPayload(towers).toString()
             val body: RequestBody = requestJson.toRequestBody(JSON_MEDIA_TYPE)
 
             val req = Request.Builder()

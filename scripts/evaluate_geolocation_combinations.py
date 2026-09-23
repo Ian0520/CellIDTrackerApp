@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Evaluate whether combinations of recorded cell towers improve Google Geolocation
-accuracy compared with the original single-tower results stored in
-`probe_history.json`.
+Explore Google Geolocation responses for combinations of historical cell IDs.
+
+This script compares API-reported radii only. Historical cells were observed at
+different times, and a smaller reported radius is not evidence of lower location
+error. Use paired target GPS and a separate, held-out evaluation for that claim.
 
 Default behavior:
 - Load API key from $GOOGLE_API_KEY or local.properties.
@@ -10,8 +12,7 @@ Default behavior:
 - Build unique towers per group.
 - Query Google Geolocation for combinations of those towers.
 - For each combination, test multiple orderings (rotate-first by default).
-- Compare the best combo accuracy against the best original single-tower
-  accuracy observed for towers inside that combination.
+- Compare the smallest reported radius with prior single-cell reported radii.
 - Write a timestamped JSON report so previous outputs are preserved.
 
 Example:
@@ -57,7 +58,6 @@ class Tower:
             "mobileNetworkCode": self.mnc,
             "locationAreaCode": self.lac,
             "cellId": self.cid,
-            "radioType": self.radio,
         }
 
     def as_json(self) -> dict:
@@ -81,7 +81,7 @@ class Tower:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="probe_history.json", help="Path to exported probe history JSON")
-    parser.add_argument("--output-dir", default=".", help="Directory for the generated report JSON")
+    parser.add_argument("--output-dir", default="captures/geolocation_combinations", help="Private output directory for the report JSON")
     parser.add_argument("--api-key", default=None, help="Google API key (defaults to env/local.properties)")
     parser.add_argument("--min-combo", type=int, default=2, help="Minimum combination size to test")
     parser.add_argument("--max-combo", type=int, default=3, help="Maximum combination size to test")
@@ -240,11 +240,21 @@ def ordered_payloads(combo: tuple[Tower, ...], order_mode: str) -> list[list[Tow
     return deduped
 
 
-def geolocate(api_key: str, towers: list[Tower]) -> dict:
-    payload = {
+def build_request_payload(towers: list[Tower]) -> dict:
+    if not towers:
+        raise ValueError("No cell towers provided")
+    radio = towers[0].radio.lower()
+    if any(tower.radio.lower() != radio for tower in towers):
+        raise ValueError("A Geolocation request needs one radioType for all cell towers")
+    return {
+        "radioType": radio,
         "considerIp": False,
         "cellTowers": [tower.as_payload() for tower in towers],
     }
+
+
+def geolocate(api_key: str, towers: list[Tower]) -> dict:
+    payload = build_request_payload(towers)
     request = urllib.request.Request(
         API_URL.format(api_key=api_key),
         data=json.dumps(payload).encode("utf-8"),
@@ -315,8 +325,8 @@ def evaluate_group(
         "summary": {
             "combinationCount": 0,
             "payloadCount": 0,
-            "improvedCombinationCount": 0,
-            "groupImproved": False,
+            "smallerReportedRadiusCombinationCount": 0,
+            "groupHasSmallerReportedRadius": False,
         },
         "combinations": [],
     }
@@ -370,8 +380,8 @@ def evaluate_group(
                             "lat": result.get("lat"),
                             "lon": result.get("lon"),
                             "payload": [t.as_json() for t in payload],
-                            "improvedVsBestSingle": (baseline_best is not None and acc < baseline_best),
-                            "improvementMeters": (baseline_best - acc) if baseline_best is not None else None,
+                            "smallerRadiusThanBestSingle": (baseline_best is not None and acc < baseline_best),
+                            "reportedRadiusDifferenceMeters": (baseline_best - acc) if baseline_best is not None else None,
                         }
                 else:
                     combo_report["allFailures"].append(
@@ -386,9 +396,9 @@ def evaluate_group(
                     time.sleep(sleep_ms / 1000.0)
 
             combo_report["bestResult"] = best_result
-            if best_result and best_result.get("improvedVsBestSingle"):
-                report["summary"]["improvedCombinationCount"] += 1
-                report["summary"]["groupImproved"] = True
+            if best_result and best_result.get("smallerRadiusThanBestSingle"):
+                report["summary"]["smallerReportedRadiusCombinationCount"] += 1
+                report["summary"]["groupHasSmallerReportedRadius"] = True
             report["combinations"].append(combo_report)
 
     report["summary"]["combinationCount"] = combinations_evaluated
@@ -411,6 +421,7 @@ def main() -> int:
         "generatedAt": datetime.now().isoformat(),
         "input": str(input_path),
         "dryRun": args.dry_run,
+        "limitation": "Historical cells are not simultaneous measurements. A smaller API-reported radius does not establish lower error against target GPS.",
         "settings": {
             "minCombo": args.min_combo,
             "maxCombo": args.max_combo,
@@ -448,12 +459,10 @@ def main() -> int:
         print(
             "Group"
             f" entries={group_meta['entryCount']}"
-            f" victim={group_meta['victim']}"
-            f" lac={group_meta['lac']}"
             f" towers={group_meta['uniqueTowerCount']}"
             f" combinations={group_summary['combinationCount']}"
             f" payloads={group_summary['payloadCount']}"
-            f" improved={group_summary['groupImproved']}"
+            f" smaller_reported_radius={group_summary['groupHasSmallerReportedRadius']}"
         )
         if args.limit_requests and total_requests >= args.limit_requests:
             break
@@ -461,7 +470,9 @@ def main() -> int:
     report["totalRequests"] = total_requests
     report["totalCombinationCount"] = sum(g["summary"]["combinationCount"] for g in report["groupReports"])
     report["totalPayloadCount"] = sum(g["summary"]["payloadCount"] for g in report["groupReports"])
-    report["totalImprovedGroupCount"] = sum(1 for g in report["groupReports"] if g["summary"]["groupImproved"])
+    report["totalSmallerReportedRadiusGroupCount"] = sum(
+        1 for g in report["groupReports"] if g["summary"]["groupHasSmallerReportedRadius"]
+    )
 
     output_path = output_dir / f"geolocation_combo_report_{timestamp}.json"
     output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False))
@@ -470,7 +481,7 @@ def main() -> int:
     print(f"Groups evaluated: {len(report['groupReports'])}")
     print(f"Combinations evaluated: {report['totalCombinationCount']}")
     print(f"Payloads generated: {report['totalPayloadCount']}")
-    print(f"Groups improved: {report['totalImprovedGroupCount']}")
+    print(f"Groups with a smaller reported radius: {report['totalSmallerReportedRadiusGroupCount']}")
     print(f"API requests planned/executed: {total_requests}")
     return 0
 
