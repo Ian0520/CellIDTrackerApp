@@ -23,6 +23,8 @@ import com.example.cellidtracker.data.ProbeRunEntity
 import com.example.cellidtracker.data.ProbeRunRepository
 import com.example.cellidtracker.data.RecordedProbeResult
 import com.example.cellidtracker.experiment.ExperimentSessionRepository
+import com.example.cellidtracker.experiment.ResearchCaptureManager
+import com.example.cellidtracker.experiment.ResearchSessionConfig
 import com.example.cellidtracker.history.ProbeHistory
 import com.example.cellidtracker.history.exportHistoryToFile
 import com.example.cellidtracker.probe.ProbeEventFromNative
@@ -43,8 +45,12 @@ import com.example.cellidtracker.probe.currentVictimFromList
 import com.example.cellidtracker.probe.ensureProbeAssets
 import java.io.File
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -66,10 +72,12 @@ private const val RECENT_MAP_WINDOW_MS = 3 * 60 * 1000L
 private const val CELL_HISTORY_DEDUPE_WINDOW_MS = 10 * 60 * 1000L
 private const val PROBE_START_VIBRATION_MS = 80L
 private const val PROBE_END_VIBRATION_MS = 140L
-private const val DEFAULT_PROBE_INTERVAL_SECONDS = 30
+private const val DEFAULT_PROBE_INTERVAL_SECONDS = 10
 private val PROBE_INTERVAL_OPTIONS = setOf(0, 5, 10, 20, 30, 60)
 private const val INTERCARRIER_DELTA_THRESHOLD_MS = 525L
 private const val ACCURACY_SHRINK_FACTOR = 0.55
+private const val RESEARCH_PREFERENCES = "research_preferences"
+private const val CAMPAIGN_ID_PREFERENCE = "campaign_id"
 private val ANSI_COLOR_REGEX = Regex("""\u001B\[[;0-9]*m""")
 private val SIP_STATUS_LOG_REGEX = Regex("""\b([1-6][0-9]{2}):\s""")
 
@@ -91,6 +99,8 @@ private data class VictimUpdateResult(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
+    private val researchPreferences =
+        appContext.getSharedPreferences(RESEARCH_PREFERENCES, Context.MODE_PRIVATE)
     private val db = HistoryDatabase.getInstance(appContext)
     private val probeResponseIntervalTracker = ProbeResponseIntervalTracker()
     private val probeAttemptRepository = ProbeAttemptRepository(
@@ -106,11 +116,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         isIntercarrierDelta = ::isIntercarrierDelta
     )
     private val experimentSessionRepository = ExperimentSessionRepository(appContext, db)
+    private val researchCaptureManager = ResearchCaptureManager(appContext)
     private val probeRunRepository = ProbeRunRepository(db.probeRunDao())
     private val probeProcessCoordinator = ProbeProcessCoordinator()
     private val logLines = ArrayDeque<String>()
     private val logDirty = AtomicBoolean(false)
     private val _events = MutableSharedFlow<MainUiEvent>(extraBufferCapacity = 16)
+    private var researchContextJob: Job? = null
 
     val events = _events.asSharedFlow()
     val historyByVictim = mutableStateMapOf<String, SnapshotStateList<ProbeHistory>>()
@@ -138,9 +150,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var autoRestartProbe by mutableStateOf(true)
         private set
+    var researchCaptureEnabled by mutableStateOf(false)
+        private set
+    var campaignIdInput by mutableStateOf(loadOrCreateCampaignId())
+        private set
+    var conditionLabelInput by mutableStateOf("")
+        private set
+    var researchNotesInput by mutableStateOf("")
+        private set
     var probeIntervalSeconds by mutableStateOf(DEFAULT_PROBE_INTERVAL_SECONDS)
         private set
-    var sessionProgressResponseLimit by mutableStateOf<Int?>(null)
+    var sessionProgressResponseLimit by mutableStateOf<Int?>(1)
         private set
     var selectedHistoryVictim by mutableStateOf<String?>(null)
         private set
@@ -181,6 +201,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAutoRestartProbeChange(value: Boolean) {
         autoRestartProbe = value
+    }
+
+    fun onResearchCaptureEnabledChange(value: Boolean) {
+        if (activeExperimentSessionDbId == null) researchCaptureEnabled = value
+    }
+
+    fun onCampaignIdChange(value: String) {
+        if (activeExperimentSessionDbId != null) return
+        campaignIdInput = value.take(80)
+        researchPreferences.edit()
+            .putString(CAMPAIGN_ID_PREFERENCE, campaignIdInput)
+            .apply()
+    }
+
+    fun onConditionLabelChange(value: String) {
+        if (activeExperimentSessionDbId == null) conditionLabelInput = value.take(80)
+    }
+
+    fun onResearchNotesChange(value: String) {
+        if (activeExperimentSessionDbId == null) researchNotesInput = value.take(500)
     }
 
     fun onProbeIntervalSecondsChange(value: Int) {
@@ -310,8 +350,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             try {
+                if (researchCaptureEnabled && campaignIdInput.trim().isEmpty()) {
+                    throw IOException("Campaign ID is required when research capture is enabled.")
+                }
+                if (researchCaptureEnabled && conditionLabelInput.trim().isEmpty()) {
+                    throw IOException("Condition label is required when research capture is enabled.")
+                }
+                val assets = if (researchCaptureEnabled) loadProbeAssets() else null
                 val session = experimentSessionRepository.start()
                 applyActiveExperimentSession(session)
+                if (researchCaptureEnabled) {
+                    withContext(Dispatchers.IO) {
+                        researchCaptureManager.begin(
+                            ResearchSessionConfig(
+                                sessionId = session.sessionId,
+                                campaignId = campaignIdInput.trim(),
+                                conditionLabel = conditionLabelInput.trim(),
+                                probeIntervalSeconds = probeIntervalSeconds,
+                                responseLimit = sessionProgressResponseLimit,
+                                autoRestart = autoRestartProbe,
+                                gitCommit = BuildConfig.GIT_COMMIT_SHA,
+                                notes = researchNotesInput.trim()
+                            ),
+                            requireNotNull(assets).bin,
+                            assets.rootExecutionDir
+                        )
+                    }
+                    startResearchContextLoop()
+                }
                 showSnackbar("Experiment session started: ${session.sessionId}")
             } catch (e: Exception) {
                 showSnackbar("Start session failed: ${e.message ?: e}")
@@ -325,12 +391,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showSnackbar("No active experiment session.")
             return
         }
+        if (isRootRunning || isIntercarrierRunning) {
+            showSnackbar("Stop the probe before exporting the experiment session.")
+            return
+        }
 
         viewModelScope.launch {
             try {
+                researchContextJob?.cancel()
+                researchContextJob = null
+                val researchExport = withContext(Dispatchers.IO) {
+                    researchCaptureManager.writeDiagnosticLog(logLines.toList())
+                    researchCaptureManager.finish(
+                        "/data/local/tmp/cellidtracker-${android.os.Process.myUid()}"
+                    )
+                }
                 val outFile = experimentSessionRepository.endAndExport(sessionDbId)
                 clearActiveExperimentSessionState()
-                showSnackbar("Session exported: ${outFile.absolutePath}")
+                val suffix = researchExport?.let {
+                    " Research export: ${it.exportDirectory.absolutePath}"
+                }.orEmpty()
+                showSnackbar("Session exported: ${outFile.absolutePath}$suffix")
             } catch (e: Exception) {
                 loadActiveExperimentSession()
                 showSnackbar("Stop/export failed: ${e.message ?: e}")
@@ -562,6 +643,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onFailure { error ->
             Log.e(LOGCAT_TAG, "stderr handler crashed", error)
         }
+        recordResearchContext("native_stderr")
     }
 
     private fun handleProbeStdoutLine(
@@ -570,6 +652,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         streamSession: ProbeStreamSession
     ) {
         appendLogText("\n$line")
+        if (isSipStatusSummaryLine(line)) recordResearchContext("sip_message_received")
         val events = streamSession.accept(line)
         if (events.structuredQueueFailed) {
             appendLogText("\n[ERR] structured probe event queue is closed")
@@ -614,6 +697,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         change: ProbeAttemptChange,
         context: ProbeAttemptContext
     ) {
+        if (researchCaptureManager.isActive()) {
+            withContext(Dispatchers.IO) {
+                researchCaptureManager.recordContext("probe_${event::class.simpleName}")
+            }
+        }
         probeAttemptRepository.persist(event, change, context)
 
         if (event is ProbeCellObservedEvent && change.cellAdded) {
@@ -667,6 +755,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         streamSession: ProbeStreamSession
     ) {
         appendLogText("\n$line")
+        if (isSipStatusSummaryLine(line)) recordResearchContext("sip_message_received")
         val events = streamSession.accept(line)
         if (events.structuredQueueFailed) {
             appendLogText("\n[ERR] structured probe event queue is closed")
@@ -748,10 +837,6 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         }
     }
 
-    private suspend fun runRootCommand(command: String): ShellResult = withContext(Dispatchers.IO) {
-        RootShell.runAsRoot(command)
-    }
-
     private suspend fun startProbeRun(assets: ProbeAssets, mode: String) {
         val victimKey = currentVictimFromList(assets.workDir)
             .ifBlank { victimInput.trim().ifBlank { "(unknown)" } }
@@ -762,10 +847,18 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         if (list.size > MAX_IN_MEMORY_RUNS_PER_VICTIM) {
             list.removeRange(0, list.size - MAX_IN_MEMORY_RUNS_PER_VICTIM)
         }
+        withContext(Dispatchers.IO) {
+            researchCaptureManager.recordContext("probe_process_started:$mode")
+        }
     }
 
     private suspend fun endProbeRun(exitCode: Int?, stoppedByUser: Boolean) {
         val run = activeProbeRun ?: return
+        withContext(Dispatchers.IO) {
+            researchCaptureManager.recordContext(
+                "probe_process_finished:exit=${exitCode ?: "unknown"}:user_stop=$stoppedByUser"
+            )
+        }
         activeProbeRun = null
         val endedRun = probeRunRepository.end(run, exitCode, stoppedByUser)
         val list = probeRunsByVictim[run.victim] ?: return
@@ -779,7 +872,18 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
         val responseLimitArgument = sessionProgressResponseLimit
             ?.let { " --session-progress-response-limit $it" }
             .orEmpty()
-        return "cd ${assets.rootExecutionDir} && GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' ./probe/spoof -r --verbose 1$responseLimitArgument"
+        val captureEnvironment = researchCaptureManager
+            .nativeCaptureEnvironment(assets.rootExecutionDir)
+            .orEmpty()
+        val pidFile = "${assets.rootExecutionDir}/probe.pid"
+        val nativeCommand =
+            "${captureEnvironment}GOOGLE_API_KEY='${BuildConfig.GOOGLE_API_KEY}' " +
+                "PROBE_INTERVAL_SECONDS='$probeIntervalSeconds' " +
+                "./probe/spoof -r --verbose 1$responseLimitArgument"
+        return "cd '${assets.rootExecutionDir}' && { $nativeCommand & " +
+            "probe_pid=\$!; printf '%s\\n' \"\$probe_pid\" > '$pidFile'; " +
+            "wait \"\$probe_pid\"; probe_exit=\$?; rm -f '$pidFile'; " +
+            "exit \"\$probe_exit\"; }"
     }
 
     private fun buildRunHeader(title: String, command: String): String = buildString {
@@ -880,7 +984,38 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private suspend fun loadActiveExperimentSession() {
-        applyActiveExperimentSession(experimentSessionRepository.loadActive())
+        val session = experimentSessionRepository.loadActive()
+        applyActiveExperimentSession(session)
+        val restored = session != null && withContext(Dispatchers.IO) {
+            runCatching { researchCaptureManager.restore(session.sessionId) }
+                .onFailure { Log.e(LOGCAT_TAG, "Research capture restore failed", it) }
+                .getOrDefault(false)
+        }
+        if (restored) {
+            researchCaptureEnabled = true
+            startResearchContextLoop()
+        }
+    }
+
+    private fun startResearchContextLoop() {
+        researchContextJob?.cancel()
+        researchContextJob = viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(5_000)
+                researchCaptureManager.recordContext("periodic")
+            }
+        }
+    }
+
+    fun recordAppLifecycle(event: String) {
+        recordResearchContext("app_lifecycle:$event")
+    }
+
+    private fun recordResearchContext(event: String) {
+        if (!researchCaptureManager.isActive()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            researchCaptureManager.recordContext(event)
+        }
     }
 
     private fun applyActiveExperimentSession(session: ExperimentSessionEntity?) {
@@ -904,6 +1039,18 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
 
     private fun showSnackbar(message: String) {
         _events.tryEmit(MainUiEvent.ShowSnackbar(message))
+    }
+
+    private fun loadOrCreateCampaignId(): String {
+        researchPreferences.getString(CAMPAIGN_ID_PREFERENCE, null)
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { return it }
+        val generated = "sipobs_" + SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+        researchPreferences.edit()
+            .putString(CAMPAIGN_ID_PREFERENCE, generated)
+            .apply()
+        return generated
     }
 
     private fun vibrate(durationMillis: Long) {

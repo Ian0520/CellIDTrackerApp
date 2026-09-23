@@ -1,6 +1,7 @@
 package com.example.cellidtracker.probe
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -74,6 +75,26 @@ class StructuredProbeEventTest {
         assertNull(
             tryParseStructuredProbeEventFromStdoutLine(
                 provisionalJson().replace("\"delta_ms\":749", "\"delta_ms\":500")
+            )
+        )
+    }
+
+    @Test
+    fun acceptsOneMillisecondTimestampTruncationDifference() {
+        assertNotNull(
+            tryParseStructuredProbeEventFromStdoutLine(
+                provisionalJson().replace(
+                    "\"response_elapsed_ms\":849",
+                    "\"response_elapsed_ms\":850"
+                )
+            )
+        )
+        assertNull(
+            tryParseStructuredProbeEventFromStdoutLine(
+                provisionalJson().replace(
+                    "\"response_elapsed_ms\":849",
+                    "\"response_elapsed_ms\":851"
+                )
             )
         )
     }

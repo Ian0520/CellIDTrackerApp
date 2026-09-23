@@ -97,6 +97,26 @@ Notes:
 - `deltaMs` must be analyzed directly. Do not subtract Unix timestamps to reconstruct latency.
 - The JSONL native contract and event ordering are defined in `docs/PROBE_EVENT_PROTOCOL.md`.
 
+### 1.4 Optional comprehensive research capture
+
+When **Comprehensive SIP research capture** is enabled, `Stop & export` also creates:
+
+```text
+Android/data/com.example.cellidtracker/files/experiment_sessions/<sessionId>_research/
+```
+
+| File | Contents |
+|---|---|
+| `manifest.json` | Campaign/condition identifiers, capture version, file hashes, native-copy errors, and caller-context write failures |
+| `session_metadata.sanitized.json` | App/APK/native hashes, Git revision, probe settings, and run notes |
+| `caller_context.sanitized.jsonl` | Timestamped caller Wi-Fi, network, telephony, power, process, and lifecycle snapshots |
+| `native/sip_capture.sanitized.jsonl*` | Ordered SIP payload metadata, parsed headers, transport metadata, retransmissions, and native FSM events |
+| `diagnostic.sanitized.log` | Bounded application/native diagnostic log |
+
+Native capture format version 1 uses one JSON object per line. Important native fields include `record_type`, `sequence`, `process_id`, `run_id`, `unix_ms`, `elapsed_ns`, `direction`, `capture_point`, addresses/ports, TCP/ESP metadata, payload size/hash, retransmission occurrence, SIP start line/method/status, Call-ID/CSeq/branch/tags, ordered headers, and Base64 payload/body. Unrecognized binary payload bytes are deliberately omitted from sanitized exports.
+
+Unredacted files remain under app-private `files/research_captures/<sessionId>/` and must not be committed or shared. Campaign-scoped pseudonyms are stable within the same campaign. Probe latency remains `deltaMs` from the native monotonic clock; cross-device Unix timestamps are only for alignment.
+
 ---
 
 ## 2) Ground-Truth Side (`LocationData`)
@@ -112,11 +132,12 @@ Top-level JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schemaVersion` | int | Currently `4`; the complete schema is documented in `LocationData/README.md` |
+| `schemaVersion` | int | Currently `6`; the complete schema is documented in `LocationData/README.md` |
 | `appType` | string | `"ground_truth"` |
 | `sessionId` | string | Auto-generated timestamp ID (`yyyyMMdd_HHmmss_SSS`) |
-| `experimentId` | string | Shared cross-phone experiment identifier |
-| `scenarioId` | string | Manual experiment condition |
+| `campaignId` | string | Shared cross-phone campaign identifier |
+| `conditionLabel` | string | Controlled block label matching the probe-side capture |
+| `scenarioId` | string | Backward-compatible alias of `conditionLabel` |
 | `startedAtMillis` | long | Unix epoch milliseconds |
 | `endedAtMillis` | long | Unix epoch milliseconds |
 | `appName` | string | App label |
@@ -125,7 +146,6 @@ Top-level JSON object:
 | `appVersionCode` | long | Version code |
 | `device` | object | Device metadata |
 | `samples` | array | 1 Hz-ish location samples |
-| `clockSync` | object | Synchronization metadata; null offset means synchronization was not measured |
 | `captureConfig` | object | Sampling intervals, debounce threshold, and screen policy |
 | `manualEvents` | array | Timestamped manual phase labels such as `walking_start` or `vehicle_start` |
 
@@ -176,7 +196,7 @@ Each item in `samples`:
 - `fast_move`: `>= 4.5`
 - `unknown`: speed unavailable
 
-Schema 4 additionally stores nested serving/neighbor cell measurements, signal metrics, registration/service state, Activity Recognition, location quality, battery/power state, and active network context.
+Schema 6 additionally stores nested serving/neighbor cell measurements, signal metrics, registration/service state, Activity Recognition, location quality, battery/power state, active network context, and the shared campaign/condition identifiers.
 
 Serving-cell change detection:
 - Debounce threshold is 2 consecutive samples on the same new `servingCellObservedKey`.
@@ -213,7 +233,7 @@ These fields are directly comparable across files.
 ### 3.3 Session ID caution
 
 - Probe `sessionId` and ground-truth `sessionId` are generated independently as timestamp-based filenames.
-- Pair files using experiment notes and matching start times, then align individual records by wall time.
+- Pair files first by `campaignId` and `conditionLabel`, then align individual records by wall time.
 
 ---
 

@@ -1,5 +1,6 @@
 package com.example.cellidtracker.probe
 
+import kotlin.math.abs
 import org.json.JSONObject
 
 const val PROBE_EVENT_CONTRACT = "cellidtracker.probe"
@@ -113,8 +114,10 @@ private fun JSONObject.parseProvisional(version: Int): ProbeProvisionalReceivedE
     val responseElapsedMs = requiredNonNegativeLong("response_elapsed_ms")
     val inviteUnixMs = requiredNonNegativeLong("invite_unix_ms")
     val responseUnixMs = requiredNonNegativeLong("response_unix_ms")
-    require(responseElapsedMs - inviteElapsedMs == deltaMs) {
-        "delta_ms must match monotonic timestamps"
+    // The native side truncates each elapsed timestamp independently. Their
+    // subtraction may differ by 1 ms from the directly measured duration.
+    require(abs((responseElapsedMs - inviteElapsedMs) - deltaMs) <= 1L) {
+        "delta_ms must match monotonic timestamps within truncation tolerance"
     }
 
     return ProbeProvisionalReceivedEvent(

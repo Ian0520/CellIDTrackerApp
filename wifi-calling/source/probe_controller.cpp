@@ -126,7 +126,7 @@ void ProbeController::run(
     return minFreshInviteInterval - elapsed;
   };
 
-  while (true) {
+  while (!util::context.shouldStop) {
     if (!application.handleIncomingPackets(nReady)) {
       session.state.retryImmediate = true;
     }
@@ -246,5 +246,6 @@ void ProbeController::run(
     }
     nReady = poll(&pfd, 1, 5000);
   }
-  application.emitActiveAttemptFinished("probe_loop_ended");
+  application.emitActiveAttemptFinished(
+      util::context.shouldStop ? "stop_requested" : "probe_loop_ended");
 }

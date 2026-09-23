@@ -108,7 +108,10 @@ fun ensureProbeAssets(ctx: Context): ProbeAssets {
 private fun stageProbeAssetsForRoot(assets: ProbeAssets) {
     val rootDir = assets.rootExecutionDir
     val prepare = RootShell.runAsRoot(
-        "rm -rf '$rootDir' && mkdir -p '$rootDir/probe' '$rootDir/config' && chmod 700 '$rootDir'"
+        "mkdir -p '$rootDir' && " +
+            "rm -rf '$rootDir/probe' '$rootDir/config' '$rootDir/victim_list' " +
+            "'$rootDir/probe.pid' && " +
+            "mkdir -p '$rootDir/probe' '$rootDir/config' && chmod 700 '$rootDir'"
     )
     if (prepare.exitCode != 0) {
         throw IOException("Unable to prepare root probe directory: ${prepare.stderr.trim()}")

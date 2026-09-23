@@ -48,3 +48,15 @@ add_executable(
 target_include_directories(native_run_mode_test PRIVATE ../include)
 target_compile_features(native_run_mode_test PRIVATE cxx_std_20)
 add_test(NAME native_run_mode_test COMMAND native_run_mode_test)
+
+add_executable(
+  sip_capture_test
+  sip_capture_test.cpp
+  ../source/sip_capture.cpp
+  ../source/sip_response.cpp
+)
+target_include_directories(sip_capture_test PRIVATE ../include)
+target_compile_features(sip_capture_test PRIVATE cxx_std_20)
+find_package(Threads REQUIRED)
+target_link_libraries(sip_capture_test PRIVATE Threads::Threads)
+add_test(NAME sip_capture_test COMMAND sip_capture_test)

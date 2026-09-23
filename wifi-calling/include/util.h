@@ -1,5 +1,6 @@
 #pragma once
 
+#include <csignal>
 #include <netinet/in.h>
 
 #include <memory>
@@ -25,7 +26,7 @@ namespace util {
     std::string calleeId;
     std::string configFolder;
     int verbose = 0;
-    bool shouldStop = false;
+    volatile std::sig_atomic_t shouldStop = 0;
 
     NativeRunMode runMode = NativeRunMode::NONE;
     int probeIntervalSeconds = 30;
