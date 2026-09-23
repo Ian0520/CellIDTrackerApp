@@ -10,6 +10,7 @@
 
 #include "encoder.h"
 #include "sadb.h"
+#include "sip_capture.h"
 #include "sip_state.h"
 #include "util.h"
 
@@ -23,6 +24,8 @@ struct State {
   uint16_t srcUdpPort;
   uint16_t dstUdpPort;
   uint16_t ipId;
+  uint32_t observedEspSequence{0};
+  std::size_t observedEspPacketSize{0};
 
   std::string toTag;
   std::string contactParam; // special for TWM
@@ -105,4 +108,5 @@ private:
   SipState currentSipState;
   SipApp currentSipApp;
   State state;
+  SipCaptureRecorder capture;
 };

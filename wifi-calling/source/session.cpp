@@ -111,6 +111,7 @@ Session::~Session() {
 
 void Session::setSipState(SipState next, const char* reason) {
   if (currentSipState == next) return;
+  const auto previous = currentSipState;
   if (util::context.verbose) {
     std::cout << "[fsm] " << sipStateToString(currentSipState)
               << " -> " << sipStateToString(next);
@@ -120,6 +121,12 @@ void Session::setSipState(SipState next, const char* reason) {
     std::cout << std::endl;
   }
   currentSipState = next;
+  capture.recordRuntimeEvent(
+      "fsm_transition",
+      std::string(sipStateToString(previous)) + " -> " + sipStateToString(next) +
+          (reason != nullptr && reason[0] != '\0'
+               ? " reason=" + std::string(reason)
+               : ""));
 }
 
 void Session::run(ESPConfig&& cfg, Application& application) {
@@ -153,6 +160,7 @@ void Session::run(ESPConfig&& cfg, Application& application) {
   std::string numbers;
   std::vector<std::string> victimList;
   while (std::getline(ifs, numbers)) {
+    if (numbers.empty()) continue;
     std::string internationalNumber = "+886" + numbers.substr(1);
 
     state.DoSCount[internationalNumber] = 0;
@@ -161,6 +169,11 @@ void Session::run(ESPConfig&& cfg, Application& application) {
     victimList.emplace_back(internationalNumber);
   }
   ifs.close();
+
+  if (victimList.empty()) {
+    std::cerr << "victim_list does not contain a target number" << std::endl;
+    return;
+  }
 
 
   pollfd pfd{};
@@ -223,6 +236,8 @@ void Session::dissectIPv4(std::span<uint8_t> buffer) {
   auto src = ipToString(hdr.saddr);
   auto dst = ipToString(hdr.daddr);
   bool receivePacket = (src == config.remote && dst == config.local);
+  state.observedEspSequence = 0;
+  state.observedEspPacketSize = 0;
   if (receivePacket) state.ipId = ntohs(hdr.id);
 
   switch (nextProtocol) {
@@ -249,6 +264,8 @@ void Session::dissectIPv6(std::span<uint8_t> buffer) {
   auto src = ipToString(hdr.ip6_src.s6_addr);
   auto dst = ipToString(hdr.ip6_dst.s6_addr);
   bool receivePacket = (src == config.remote && dst == config.local);
+  state.observedEspSequence = 0;
+  state.observedEspPacketSize = 0;
   switch (nextProtocol) {
     case IPPROTO_TCP:
       dissectTCP(payload, receivePacket);
@@ -267,6 +284,8 @@ void Session::dissectIPv6(std::span<uint8_t> buffer) {
 void Session::dissectESP(std::span<uint8_t> buffer, bool receivePacket) {
   if (util::context.verbose > 1) std::cout << "Layer: ESP" << std::endl;
   auto&& hdr = *reinterpret_cast<ESPHeader*>(buffer.data());
+  state.observedEspSequence = ntohl(hdr.seq);
+  state.observedEspPacketSize = buffer.size();
   int hashLength = config.aalg->hashLength();
   if (receivePacket) {
     state.useESP = true;
@@ -327,6 +346,19 @@ void Session::dissectTCP(std::span<uint8_t> buffer, bool receivePacket) {
     state.dstPort = hdr.source;
   }
   if (payload.empty()) return;
+  capture.recordPayload(payload, SipCaptureMetadata{
+      .direction = receivePacket ? "incoming" : "outgoing",
+      .capturePoint = "decoded_transport",
+      .transport = "tcp",
+      .ipVersion = state.afFamily == AF_INET ? 4 : 6,
+      .sourceAddress = receivePacket ? config.remote : config.local,
+      .destinationAddress = receivePacket ? config.local : config.remote,
+      .sourcePort = ntohs(hdr.source),
+      .destinationPort = ntohs(hdr.dest),
+      .tcpSequence = ntohl(hdr.seq),
+      .tcpAcknowledgment = ntohl(hdr.ack_seq),
+      .espSequence = state.observedEspSequence,
+      .encryptedPacketSize = state.observedEspPacketSize});
   dissectSIP(payload, receivePacket);
 }
 
@@ -335,6 +367,17 @@ void Session::dissectUDP(std::span<uint8_t> buffer, bool receivePacket) {
   auto&& hdr = *reinterpret_cast<udphdr*>(buffer.data());
   auto payload = buffer.last(buffer.size() - sizeof(udphdr));
   if (payload.empty()) return;
+  capture.recordPayload(payload, SipCaptureMetadata{
+      .direction = receivePacket ? "incoming" : "outgoing",
+      .capturePoint = "decoded_transport",
+      .transport = "udp",
+      .ipVersion = state.afFamily == AF_INET ? 4 : 6,
+      .sourceAddress = receivePacket ? config.remote : config.local,
+      .destinationAddress = receivePacket ? config.local : config.remote,
+      .sourcePort = ntohs(hdr.source),
+      .destinationPort = ntohs(hdr.dest),
+      .espSequence = state.observedEspSequence,
+      .encryptedPacketSize = state.observedEspPacketSize});
   bool isSip = dissectSIP(payload, receivePacket);
   if (!receivePacket && isSip) {
     state.srcUdpPort = hdr.source;
@@ -571,6 +614,22 @@ bool Session::dissectSIP(std::span<uint8_t> buffer, bool receivePacket) {
 }
 
 void Session::encapsulate(std::span<uint8_t> payload) {
+  if (!payload.empty()) {
+    const bool udp = currentSipState == SipState::SPROG;
+    capture.recordPayload(payload, SipCaptureMetadata{
+        .direction = "outgoing",
+        .capturePoint = "application_send",
+        .transport = udp ? "udp" : "tcp",
+        .ipVersion = state.afFamily == AF_INET ? 4 : 6,
+        .sourceAddress = config.local,
+        .destinationAddress = config.remote,
+        .sourcePort = ntohs(udp ? state.srcUdpPort : state.srcPort),
+        .destinationPort = ntohs(udp ? state.dstUdpPort : state.dstPort),
+        .tcpSequence = state.tcpseq,
+        .tcpAcknowledgment = state.tcpackseq,
+        .espSequence = state.espseq + 1,
+        .encryptedPacketSize = 0});
+  }
   auto buffer = std::span{sendBuffer, sendBuffer + mtu};
   // Select function pointer
   int (Session::*encapFunc)(std::span<uint8_t>, std::span<uint8_t>);

@@ -9,6 +9,8 @@ project(
   LANGUAGES CXX
 )
 
+find_package(Threads REQUIRED)
+
 # ---- Include guards ----
 
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
@@ -79,6 +81,7 @@ set(active_sources
   source/sadb.cpp
   source/session.cpp
   source/sip.cpp
+  source/sip_capture.cpp
   source/sip_response.cpp
   source/util.cpp
 )
@@ -106,6 +109,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     mbedx509
 )
 target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(${PROJECT_NAME} PUBLIC Threads::Threads)
 
 target_include_directories(
   ${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>

@@ -1,0 +1,34 @@
+{
+  "campaignId": "sipobs_20260916",
+  "primaryAttemptsPerBlock": 30,
+  "maxGroundTruthGapMs": 5000,
+  "bootstrapIterations": 20000,
+  "permutationIterations": 50000,
+  "randomSeed": 20260922,
+  "blocks": [
+    {
+      "label": "A1",
+      "conditionLabel": "day1_A1_normal",
+      "callerSessionId": "20260922_140609_953",
+      "groundTruthFile": "20260922_140606_343.json",
+      "networkName": "University Wi-Fi",
+      "primaryWifiFrequencyMhz": 5620
+    },
+    {
+      "label": "B",
+      "conditionLabel": "day1_B_normal",
+      "callerSessionId": "20260922_143816_980",
+      "groundTruthFile": "20260922_143814_362.json",
+      "networkName": "Phone hotspot",
+      "primaryWifiFrequencyMhz": 5745
+    },
+    {
+      "label": "A2",
+      "conditionLabel": "day1_A2_repeat_normal",
+      "callerSessionId": "20260922_145941_072",
+      "groundTruthFile": "20260922_145939_671.json",
+      "networkName": "University Wi-Fi",
+      "primaryWifiFrequencyMhz": 5620
+    }
+  ]
+}

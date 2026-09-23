@@ -2,14 +2,17 @@ package com.example.cellidtracker.probe
 
 import android.content.Context
 import android.os.Build
+import android.os.Process
 import android.system.Os
+import com.example.cellidtracker.RootShell
 import java.io.File
 import java.io.IOException
 
 data class ProbeAssets(
     val workDir: File,
     val bin: File,
-    val configDir: File
+    val configDir: File,
+    val rootExecutionDir: String
 )
 
 fun currentVictimFromList(workDir: File): String {
@@ -92,5 +95,50 @@ fun ensureProbeAssets(ctx: Context): ProbeAssets {
         runCatching { configVictim.writeText(rootVictim.readText()) }
     }
 
-    return ProbeAssets(workDir = workDir, bin = binDest, configDir = configDir)
+    val assets = ProbeAssets(
+        workDir = workDir,
+        bin = binDest,
+        configDir = configDir,
+        rootExecutionDir = "/data/local/tmp/cellidtracker-${Process.myUid()}"
+    )
+    stageProbeAssetsForRoot(assets)
+    return assets
+}
+
+private fun stageProbeAssetsForRoot(assets: ProbeAssets) {
+    val rootDir = assets.rootExecutionDir
+    val prepare = RootShell.runAsRoot(
+        "mkdir -p '$rootDir' && " +
+            "rm -rf '$rootDir/probe' '$rootDir/config' '$rootDir/victim_list' " +
+            "'$rootDir/probe.pid' && " +
+            "mkdir -p '$rootDir/probe' '$rootDir/config' && chmod 700 '$rootDir'"
+    )
+    if (prepare.exitCode != 0) {
+        throw IOException("Unable to prepare root probe directory: ${prepare.stderr.trim()}")
+    }
+
+    copyToRoot(assets.bin, "$rootDir/probe/spoof", executable = true)
+    assets.configDir.walkTopDown()
+        .filter(File::isFile)
+        .forEach { source ->
+            val relative = source.relativeTo(assets.configDir).invariantSeparatorsPath
+            copyToRoot(source, "$rootDir/config/$relative", executable = false)
+        }
+    copyToRoot(File(assets.workDir, "victim_list"), "$rootDir/victim_list", executable = false)
+
+    val verify = RootShell.runAsRoot(
+        "test -x '$rootDir/probe/spoof' && test -r '$rootDir/victim_list'"
+    )
+    if (verify.exitCode != 0) {
+        throw IOException("Root probe staging verification failed: ${verify.stderr.trim()}")
+    }
+}
+
+private fun copyToRoot(source: File, destination: String, executable: Boolean) {
+    val result = RootShell.copyFileAsRoot(source, destination, executable)
+    if (result.exitCode != 0) {
+        throw IOException(
+            "Unable to stage ${source.name}: ${result.stderr.trim().ifEmpty { "root copy failed" }}"
+        )
+    }
 }

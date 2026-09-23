@@ -50,6 +50,14 @@ fun ProbeTabContent(
     activeExperimentStartedAtMillis: Long?,
     onStartExperimentSession: () -> Unit,
     onStopExperimentSession: () -> Unit,
+    researchCaptureEnabled: Boolean,
+    onResearchCaptureEnabledChange: (Boolean) -> Unit,
+    campaignId: String,
+    onCampaignIdChange: (String) -> Unit,
+    conditionLabel: String,
+    onConditionLabelChange: (String) -> Unit,
+    researchNotes: String,
+    onResearchNotesChange: (String) -> Unit,
     victimInput: String,
     onVictimInputChange: (String) -> Unit,
     isMoving: Boolean,
@@ -113,6 +121,53 @@ fun ProbeTabContent(
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Comprehensive SIP research capture")
+                        Text(
+                            "Stores bounded raw signaling privately and exports sanitized files.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = researchCaptureEnabled,
+                        onCheckedChange = onResearchCaptureEnabledChange,
+                        enabled = activeExperimentSessionId == null
+                    )
+                }
+                if (researchCaptureEnabled) {
+                    OutlinedTextField(
+                        value = campaignId,
+                        onValueChange = onCampaignIdChange,
+                        enabled = activeExperimentSessionId == null,
+                        label = { Text("Campaign ID") },
+                        supportingText = {
+                            Text("Generated once and retained. Verify it matches the target app.")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = researchNotes,
+                        onValueChange = onResearchNotesChange,
+                        enabled = activeExperimentSessionId == null,
+                        label = { Text("Run notes (optional)") },
+                        supportingText = { Text("Record controlled changes or known anomalies.") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = conditionLabel,
+                        onValueChange = onConditionLabelChange,
+                        enabled = activeExperimentSessionId == null,
+                        label = { Text("Condition label") },
+                        supportingText = { Text("Example: day1_network_a_first") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
@@ -148,7 +203,7 @@ fun ProbeTabContent(
                     onValueChange = onVictimInputChange,
                     label = { Text("Victim number") },
                     modifier = Modifier.fillMaxWidth(),
-                    supportingText = { Text("Replaces /data/local/tmp/victim_list with this number") }
+                    supportingText = { Text("Saved privately, then staged for the root probe.") }
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),

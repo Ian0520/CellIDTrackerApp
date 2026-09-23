@@ -22,6 +22,10 @@ const std::string wlan0Interface = "wlan0";
 const std::string configFolder = "config";
 
 namespace {
+void handleStopSignal(int) {
+  util::context.shouldStop = 1;
+}
+
 int readProbeIntervalSeconds() {
   const char* raw = std::getenv("PROBE_INTERVAL_SECONDS");
   if (raw == nullptr) return 30;
@@ -44,7 +48,8 @@ int readProbeIntervalSeconds() {
 
 
 int main(int argc, char* argv[]) {
-  signal(SIGINT, [](int) { util::context.shouldStop = true; });
+  signal(SIGINT, handleStopSignal);
+  signal(SIGTERM, handleStopSignal);
   cxxopts::Options options(argv[0], "Making phone calls via VoWiFi.");
   // clang-format off
   options.add_options()

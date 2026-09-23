@@ -1,0 +1,30 @@
+{
+  "randomSeed": 20260923,
+  "bootstrapIterations": 20000,
+  "permutationIterations": 50000,
+  "days": [
+    {
+      "label": "Day 1",
+      "config": "analysis/day1_aba_20260922.json"
+    },
+    {
+      "label": "Day 2",
+      "config": "analysis/day2_aba_20260923.json"
+    }
+  ],
+  "controls": [
+    {
+      "day": "Day 2",
+      "label": "A-extra",
+      "campaignId": "sipobs_20260923",
+      "conditionLabel": "day2_B_normal",
+      "groundTruthConditionLabel": "day2_B_normal",
+      "callerSessionId": "20260923_130659_833",
+      "groundTruthFile": "20260923_130656_649.json",
+      "networkName": "University Wi-Fi (unchanged)",
+      "primaryWifiFrequencyMhz": 5700,
+      "primaryAttempts": 29,
+      "maxGroundTruthGapMs": 1000
+    }
+  ]
+}

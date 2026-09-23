@@ -1,6 +1,9 @@
 package com.example.cellidtracker
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,6 +38,19 @@ import kotlinx.coroutines.flow.collect
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private val phoneStatePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
+    override fun onStart() {
+        super.onStart()
+        viewModel.recordAppLifecycle("started")
+    }
+
+    override fun onStop() {
+        viewModel.recordAppLifecycle("stopped")
+        super.onStop()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,6 +127,21 @@ class MainActivity : ComponentActivity() {
                                 activeExperimentStartedAtMillis = viewModel.activeExperimentStartedAtMillis,
                                 onStartExperimentSession = viewModel::startExperimentSession,
                                 onStopExperimentSession = viewModel::stopExperimentSession,
+                                researchCaptureEnabled = viewModel.researchCaptureEnabled,
+                                onResearchCaptureEnabledChange = { enabled ->
+                                    viewModel.onResearchCaptureEnabledChange(enabled)
+                                    if (enabled && checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+                                        PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        phoneStatePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+                                    }
+                                },
+                                campaignId = viewModel.campaignIdInput,
+                                onCampaignIdChange = viewModel::onCampaignIdChange,
+                                conditionLabel = viewModel.conditionLabelInput,
+                                onConditionLabelChange = viewModel::onConditionLabelChange,
+                                researchNotes = viewModel.researchNotesInput,
+                                onResearchNotesChange = viewModel::onResearchNotesChange,
                                 victimInput = viewModel.victimInput,
                                 onVictimInputChange = viewModel::onVictimInputChange,
                                 isMoving = viewModel.isMoving,

@@ -1,5 +1,13 @@
 import java.util.Properties
 
+val gitCommitSha = System.getenv("GIT_COMMIT_SHA") ?: runCatching {
+    ProcessBuilder("git", "rev-parse", "HEAD")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+        .inputStream.bufferedReader().use { it.readText().trim() }
+}.getOrDefault("unknown")
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -29,6 +37,7 @@ android {
             ?: localProps.getProperty("GOOGLE_API_KEY")
             ?: error("GOOGLE_API_KEY not set in local.properties or Gradle properties")
         buildConfigField("String", "GOOGLE_API_KEY", "\"$googleApiKey\"")
+        buildConfigField("String", "GIT_COMMIT_SHA", "\"$gitCommitSha\"")
     }
 
     buildTypes {
