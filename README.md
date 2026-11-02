@@ -44,25 +44,50 @@ GOOGLE_API_KEY=your_real_key_here
 The build injects it into `BuildConfig.GOOGLE_API_KEY`; the app and bundled probe read it from there and pass it to the native binary as an environment variable.
 
 ## Notes
-- On first run, the app copies `probe/<abi>/spoof` and `config/...` from assets into its private storage and executes the probe via root.
+- When preparing a run, the app copies `probe/<abi>/spoof` and `config/...` from assets into private storage, then stages `probe/spoof`, `config/...`, and `victim_list` under `/data/local/tmp/cellidtracker-<appUid>/`. It changes to that directory and executes through `su -c`.
 - The Android app invokes only the native remote-probe mode; other native CLI workflows are isolated from the active application source.
+- Native startup sets airplane mode on the **probing phone**, enables Wi-Fi, and waits for its ePDG interface and IMS/IPsec configuration. Wi-Fi Calling must be available on that phone.
 - Map uses osmdroid; deprecation warnings are cosmetic.
 - History records time and victim; it is not segmented per target unless you clear it manually.
 
-## Rebuild and bundle the probe binary
-Use your NDK toolchain to rebuild and copy the binary into app assets. Example for armeabi-v7a:
-```bash
-export NDK=$HOME/android-ndk-r25
-cd wifi-calling
-cmake -S all -B build \
-  -D CMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
-  -D ANDROID_PLATFORM=android-29 \
-  -D ANDROID_ABI=armeabi-v7a \
-  -D CMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-cp bin/spoof ../app/src/main/assets/probe/armeabi-v7a/
+## Start the probe from the Android app
+
+1. Open **Probe**, enter the authorized test number, and press **Set victim number**. The native workflow expects a local Taiwan number beginning with `0`, for example `09XXXXXXXX` with the placeholder replaced by the actual number.
+2. Select the INVITE interval, 183 response limit and auto-restart. The app's initial interval is **10 seconds**; explicitly select response limit **1** for the existing research setup.
+3. For session recording, enable **Comprehensive SIP research capture** as needed, fill Campaign/Condition, and press **Start session**.
+4. Press **Probe** separately and check new log/results. Session creation does not start probing.
+5. Press **Stop**, wait for **Idle**, then **Stop & export** if a session is active.
+
+The app's native invocation is equivalent to:
+
+```text
+working directory: /data/local/tmp/cellidtracker-<appUid>
+environment: GOOGLE_API_KEY, PROBE_INTERVAL_SECONDS, optional SIP_CAPTURE_*
+command: ./probe/spoof -r --verbose 1 [--session-progress-response-limit N]
 ```
-Repeat with `ANDROID_ABI=arm64-v8a` and copy to `app/src/main/assets/probe/arm64-v8a/` for 64-bit devices. Then rebuild the APK so the updated binary is packaged.
+
+The response-limit argument is omitted for **Carrier default**. The app also manages a PID file and process restarts. A bare manual `./spoof -r` instead defaults to **30 seconds**, carrier-default response limit, and no native capture unless configured. See [manual CLI startup](wifi-calling/README.md).
+
+The legacy `-l` flag starts a command server. For the current **local mall database collection**, use LocationData and [the local database plan](docs/LOCAL_DATABASE_PRECISION_PLAN.md).
+
+## Rebuild and bundle the probe binary
+From the repository root, build and explicitly copy the executable into app assets. The script uses **android-29 / armeabi-v7a**:
+```bash
+export NDK="$HOME/android-ndk-r25"
+./scripts/build-native-probe.sh
+cp wifi-calling/bin/spoof app/src/main/assets/probe/armeabi-v7a/spoof
+```
+
+After deliberately replacing the bundled executable, update and verify the pinned checksum, then rebuild/reinstall the APK:
+
+```bash
+sha256sum app/src/main/assets/probe/armeabi-v7a/spoof > checksums/native-probe.sha256
+./scripts/verify-native-artifact.sh
+./gradlew :app:assembleDebug
+./gradlew :app:installDebug
+```
+
+Gradle automatically synchronizes config files, but does not compile or copy the native executable. For another ABI, configure a separate CMake build and copy its binary to `app/src/main/assets/probe/<abi>/`. Do not reuse a build directory configured for a different ABI.
 
 ## Export probe history to a file
 1. In the app, open the **History** tab and tap **Export all to file**.  
@@ -76,8 +101,9 @@ The JSON contains each entry’s victim, mcc/mnc/lac/cid, lat/lon/accuracy, time
 
 ## Offline experiment session export (probe app side)
 1. In the **Probe** tab, tap **Start session**. The session ID is generated automatically from the current date and time.
-2. Run probing as usual.
-3. Tap **Stop & export** when finished.
+2. Tap **Probe** to start probing.
+3. Tap **Stop** and wait for **Idle** when finished.
+4. Tap **Stop & export**.
 
 The app exports:
 - `Android/data/com.example.cellidtracker/files/experiment_sessions/<sessionId>.json`
@@ -86,7 +112,7 @@ Schema 4 exports one record per native INVITE attempt, including attempts withou
 
 ## Caller-side SIP observability experiment
 
-The current fixed campaign settings are a **10-second minimum INVITE interval**, **one provisional response**, and auto-restart enabled. Both apps automatically create and retain a daily-formatted campaign ID; verify the values match once, then assign a unique condition label to every experimental block.
+The existing campaign selects a **10-second INVITE interval**, **one provisional response**, and auto-restart enabled. Ten seconds is a selected setting, not the native software's hard lower bound; actual sends can be later. Both apps generate and retain a date-based campaign ID when first needed; they do not automatically synchronize it or reset it each day. Verify/update the campaign for the current visit, then assign conditions according to the experiment's pairing plan.
 
 Raw SIP evidence remains in app-private storage. `Stop & export` writes a sanitized research directory beside the normal session export. Follow [`docs/SIP_OBSERVABILITY_EXPERIMENT.md`](docs/SIP_OBSERVABILITY_EXPERIMENT.md) for the A-B-A procedure, naming rules, extraction, and validity checks.
 

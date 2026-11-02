@@ -1,5 +1,11 @@
 # Offline Two-App Experiment Data Collection Plan
 
+> **2026-10-28 current priority:** Follow [the local database / precision plan](docs/LOCAL_DATABASE_PRECISION_PLAN.md). Begin with local LocationData collection and offline single-cell/history positioning, then validate using caller probes. Departure detection and probe-budget scheduling are backups. The earlier full two-app campaign and episode counts below are reference workflows, not prerequisites for the initial local stage.
+
+> **2026-10-15 research supplement:** For the selected building, floor, transition-landmark and departure/probe-budget directions, use [the four-direction experiment plan](docs/FOUR_DIRECTION_EXPERIMENT_PLAN.md) and [literature review](docs/FOUR_DIRECTION_LITERATURE_REVIEW.md). Indoor checkpoints, manual floor/zone labels and physical crossing events supplement this offline workflow; GNSS/altitude alone is not indoor floor truth. This supplement proposes collection, without changing either app.
+
+> **2026-10-27 field procedure:** Follow [the mall field runbook](docs/MALL_FIELD_EXPERIMENT_RUNBOOK.md) for the detailed current-app steps. It intentionally pairs one continuous caller session with multiple condition-labeled target sessions using campaign, timestamps and a mapping table; this requires no matching session IDs. Its indoor labels and event intervals take precedence over the older GNSS-only examples below.
+
 ## Summary
 
 This document supersedes the earlier manual-ground-truth experiment design.
