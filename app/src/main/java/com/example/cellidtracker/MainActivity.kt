@@ -124,24 +124,17 @@ class MainActivity : ComponentActivity() {
                             0 -> ProbeTabContent(
                                 probeColumnScrollState = probeColumnScrollState,
                                 activeExperimentSessionId = viewModel.activeExperimentSessionId,
-                                activeExperimentStartedAtMillis = viewModel.activeExperimentStartedAtMillis,
-                                onStartExperimentSession = viewModel::startExperimentSession,
-                                onStopExperimentSession = viewModel::stopExperimentSession,
-                                researchCaptureEnabled = viewModel.researchCaptureEnabled,
-                                onResearchCaptureEnabledChange = { enabled ->
-                                    viewModel.onResearchCaptureEnabledChange(enabled)
-                                    if (enabled && checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+                                isExperimentSessionBusy = viewModel.isExperimentSessionBusy,
+                                experimentSessionError = viewModel.experimentSessionError,
+                                onStartExperimentSession = {
+                                    if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
                                         PackageManager.PERMISSION_GRANTED
                                     ) {
                                         phoneStatePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
                                     }
+                                    viewModel.startExperimentSession()
                                 },
-                                campaignId = viewModel.campaignIdInput,
-                                onCampaignIdChange = viewModel::onCampaignIdChange,
-                                conditionLabel = viewModel.conditionLabelInput,
-                                onConditionLabelChange = viewModel::onConditionLabelChange,
-                                researchNotes = viewModel.researchNotesInput,
-                                onResearchNotesChange = viewModel::onResearchNotesChange,
+                                onStopExperimentSession = viewModel::stopExperimentSession,
                                 victimInput = viewModel.victimInput,
                                 onVictimInputChange = viewModel::onVictimInputChange,
                                 isMoving = viewModel.isMoving,

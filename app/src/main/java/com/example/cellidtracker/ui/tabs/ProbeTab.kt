@@ -47,17 +47,10 @@ private const val DISPLAYED_ACCURACY_SHRINK_FACTOR = 0.55
 fun ProbeTabContent(
     probeColumnScrollState: ScrollState,
     activeExperimentSessionId: String?,
-    activeExperimentStartedAtMillis: Long?,
+    isExperimentSessionBusy: Boolean,
+    experimentSessionError: String?,
     onStartExperimentSession: () -> Unit,
     onStopExperimentSession: () -> Unit,
-    researchCaptureEnabled: Boolean,
-    onResearchCaptureEnabledChange: (Boolean) -> Unit,
-    campaignId: String,
-    onCampaignIdChange: (String) -> Unit,
-    conditionLabel: String,
-    onConditionLabelChange: (String) -> Unit,
-    researchNotes: String,
-    onResearchNotesChange: (String) -> Unit,
     victimInput: String,
     onVictimInputChange: (String) -> Unit,
     isMoving: Boolean,
@@ -98,72 +91,38 @@ fun ProbeTabContent(
             )
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Experiment Session", style = MaterialTheme.typography.titleMedium)
-                if (activeExperimentSessionId == null) {
-                    Text(
-                        "Start a session to generate an automatic date-time ID and collect experiment samples.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    Text(
-                        "Session ID: $activeExperimentSessionId",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    val startedAtText = activeExperimentStartedAtMillis
-                        ?.let { Instant.ofEpochMilli(it).toString() }
-                        ?: "N/A"
-                    Text(
-                        "Started: $startedAtText",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Comprehensive SIP research capture")
-                        Text(
-                            "Stores bounded raw signaling privately and exports sanitized files.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = researchCaptureEnabled,
-                        onCheckedChange = onResearchCaptureEnabledChange,
-                        enabled = activeExperimentSessionId == null
+                    Text("Experiment Session", style = MaterialTheme.typography.titleMedium)
+                    AssistChip(
+                        onClick = {},
+                        enabled = false,
+                        label = {
+                            Text(
+                                when {
+                                    experimentSessionError != null -> "Unavailable"
+                                    isExperimentSessionBusy -> "Working…"
+                                    activeExperimentSessionId != null -> "Active"
+                                    else -> "Ready"
+                                }
+                            )
+                        }
                     )
                 }
-                if (researchCaptureEnabled) {
-                    OutlinedTextField(
-                        value = campaignId,
-                        onValueChange = onCampaignIdChange,
-                        enabled = activeExperimentSessionId == null,
-                        label = { Text("Campaign ID") },
-                        supportingText = {
-                            Text("Generated once and retained. Verify it matches the target app.")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = researchNotes,
-                        onValueChange = onResearchNotesChange,
-                        enabled = activeExperimentSessionId == null,
-                        label = { Text("Run notes (optional)") },
-                        supportingText = { Text("Record controlled changes or known anomalies.") },
-                        minLines = 2,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = conditionLabel,
-                        onValueChange = onConditionLabelChange,
-                        enabled = activeExperimentSessionId == null,
-                        label = { Text("Condition label") },
-                        supportingText = { Text("Example: day1_network_a_first") },
-                        modifier = Modifier.fillMaxWidth()
+                Text(
+                    "SIP capture is automatic. Use Probe to start probing.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (experimentSessionError != null) {
+                    Text(experimentSessionError, color = MaterialTheme.colorScheme.error)
+                }
+                if (activeExperimentSessionId != null) {
+                    Text(
+                        "Session ID: $activeExperimentSessionId",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
                 Row(
@@ -175,7 +134,9 @@ fun ProbeTabContent(
                         modifier = Modifier
                             .weight(1f)
                             .height(48.dp),
-                        enabled = activeExperimentSessionId == null
+                        enabled = activeExperimentSessionId == null &&
+                            !isExperimentSessionBusy && experimentSessionError == null &&
+                            !isRootRunning && !isIntercarrierRunning
                     ) { Text("Start session") }
 
                     Button(
@@ -183,7 +144,7 @@ fun ProbeTabContent(
                         modifier = Modifier
                             .weight(1f)
                             .height(48.dp),
-                        enabled = activeExperimentSessionId != null
+                        enabled = activeExperimentSessionId != null && !isExperimentSessionBusy
                     ) { Text("Stop & export") }
                 }
             }

@@ -47,7 +47,14 @@ internal data class ResearchSessionConfig(
 internal data class ResearchExportResult(
     val exportDirectory: File,
     val rawDirectory: File,
-    val copiedCaptureFiles: Int
+    val copiedCaptureFiles: Int,
+    val health: ResearchCaptureHealth
+)
+
+internal data class JsonLinesSanitizationResult(
+    val recordsSanitized: Long,
+    val recordsDropped: Long,
+    val reportedNativeDroppedEvents: Long
 )
 
 internal class ResearchCaptureManager(private val context: Context) {
@@ -147,11 +154,18 @@ internal class ResearchCaptureManager(private val context: Context) {
         val exportDirectory = externalDirectory(config.sessionId).apply { mkdirs() }
         val sanitizer = CaptureSanitizer(requireNotNull(pseudonymizer))
         val exportedFiles = mutableListOf<JSONObject>()
+        var nativeRecords = 0L
+        var sanitizationFailures = 0L
+        var nativeReportedDroppedEvents = 0L
         rawDirectory.walkTopDown().filter(File::isFile).forEach { source ->
             val relative = source.relativeTo(rawDirectory).invariantSeparatorsPath
+            if (relative.startsWith("native/")) return@forEach
             val destination = File(exportDirectory, sanitizedRelativePath(relative))
             when {
-                ".jsonl" in source.name -> sanitizer.sanitizeJsonLines(source, destination)
+                ".jsonl" in source.name -> {
+                    val result = sanitizer.sanitizeJsonLines(source, destination)
+                    sanitizationFailures += result.recordsDropped
+                }
                 source.name == "session_metadata.json" -> sanitizer.sanitizeJsonFile(source, destination)
                 source.name == "diagnostic.log" -> sanitizer.sanitizeTextFile(source, destination)
                 else -> return@forEach
@@ -161,8 +175,39 @@ internal class ResearchCaptureManager(private val context: Context) {
                 .put("bytes", destination.length())
                 .put("sha256", sha256(destination))
         }
+        val nativeExport = exportNativeCapture(
+            nativeDirectory,
+            File(exportDirectory, "native"),
+            sanitizer
+        )
+        nativeRecords += nativeExport.packetRecords
+        sanitizationFailures += nativeExport.sanitizationFailures
+        nativeReportedDroppedEvents += nativeExport.reportedNativeDroppedEvents
+        nativeExport.files.forEach { destination ->
+            exportedFiles += JSONObject()
+                .put("path", destination.relativeTo(exportDirectory).invariantSeparatorsPath)
+                .put("bytes", destination.length())
+                .put("sha256", sha256(destination))
+        }
+        val reassembly = nativeExport.reassembly
+        val health = ResearchCaptureHealth(
+            nativeCaptureFilesCopied = copied,
+            nativeCaptureRecords = nativeRecords,
+            nativeCaptureCopyErrors = copyErrors,
+            callerContextWriteFailures = contextWriteFailures,
+            sanitizationFailures = sanitizationFailures,
+            nativeReportedDroppedEvents = nativeReportedDroppedEvents,
+            incompleteSipStreams = reassembly.incompleteStreams,
+            incompleteSipDatagrams = reassembly.incompleteDatagrams,
+            malformedSipMessages = reassembly.malformedMessages,
+            sipStreamConflicts = reassembly.conflictingTcpStreams,
+            sipStreamGaps = reassembly.tcpGaps,
+            nativeSequenceDiscontinuities = reassembly.nativeDiscontinuities,
+            sipReassemblyLimitExceeded = reassembly.limitExceeded,
+            nativePacketQualityIssues = nativeExport.packetQualityIssues
+        )
         val manifest = JSONObject()
-            .put("manifestVersion", 1)
+            .put("manifestVersion", 2)
             .put("captureFormatVersion", RESEARCH_CAPTURE_FORMAT_VERSION)
             .put("sessionId", config.sessionId)
             .put("campaignId", config.campaignId)
@@ -171,6 +216,15 @@ internal class ResearchCaptureManager(private val context: Context) {
             .put("nativeCaptureFilesCopied", copied)
             .put("nativeCaptureCopyErrors", copyErrors)
             .put("callerContextWriteFailures", contextWriteFailures)
+            .put("nativeCaptureRecords", nativeRecords)
+            .put("sanitizationFailures", sanitizationFailures)
+            .put("nativeReportedDroppedEvents", nativeReportedDroppedEvents)
+            .put("sipMessageFormatVersion", 1)
+            .put("sipMessageReassembly", reassembly.toJson())
+            .put("nativePacketQualityIssues", nativeExport.packetQualityIssues)
+            .put("captureWarnings", JSONArray(health.warnings.map {
+                JSONObject().put("code", it.code).put("message", it.message)
+            }))
             .put("files", JSONArray(exportedFiles))
             .put("rawDataLocation", "app-private; not included in this export")
         File(exportDirectory, "manifest.json").writeText(manifest.toString(2))
@@ -178,10 +232,16 @@ internal class ResearchCaptureManager(private val context: Context) {
             RootShell.removeResearchCaptureFiles(rootExecutionDir, RESEARCH_CAPTURE_MAX_FILES)
         }
 
+        closeSession()
+        return ResearchExportResult(exportDirectory, rawDirectory, copied, health)
+    }
+
+    /** Detach recording state without deleting raw files, including after a failed export. */
+    @Synchronized
+    fun closeSession() {
         activeConfig = null
         contextFile = null
         pseudonymizer = null
-        return ResearchExportResult(exportDirectory, rawDirectory, copied)
     }
 
     fun nativeCaptureEnvironment(rootExecutionDir: String): String? {
@@ -439,9 +499,9 @@ internal class CaptureSanitizer(private val pseudonymizer: CampaignPseudonymizer
             "(?:%[A-Za-z0-9._-]+)?(?![0-9a-f:])"
     )
     private val mac = Regex("(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
-    private val sipUser = Regex("(?i)(sip:)([^@;>\\s]+)")
+    private val sipUser = Regex("(?i)(sips?:)([^@;<>\\s\"']+)")
     private val sipParameter = Regex(
-        "(?i)(\\b(?:branch|tag|i-wlan-node-id|ue-local-ip-address)=)(\\\"?)([^;>,\\s\\\"]+)(\\\"?)"
+        "(?i)(\\b(?:branch|tag|i-wlan-node-id|ue-local-ip-address)[ \\t]*=[ \\t]*)(\\\"?)([^;>,\\s\\\"]+)(\\\"?)"
     )
     private val uuid = Regex(
         "(?i)\\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\b"
@@ -450,20 +510,39 @@ internal class CaptureSanitizer(private val pseudonymizer: CampaignPseudonymizer
     private val credentialHeaders = setOf(
         "authorization",
         "proxy-authorization",
-        "authentication-info"
+        "authentication-info",
+        "www-authenticate",
+        "proxy-authenticate"
     )
 
-    fun sanitizeJsonLines(source: File, destination: File) {
+    fun sanitizeJsonLines(source: File, destination: File): JsonLinesSanitizationResult {
+        var recordsSanitized = 0L
+        var recordsDropped = 0L
+        var reportedNativeDroppedEvents = 0L
         destination.parentFile?.mkdirs()
         destination.bufferedWriter().use { writer ->
             source.useLines { lines ->
                 lines.forEach { line ->
-                    val sanitized = runCatching { sanitizeRecord(JSONObject(line)) }
-                        .getOrElse { JSONObject().put("sanitizationError", it.message).put("rawLineDropped", true) }
+                    val sanitized = runCatching {
+                        val record = JSONObject(line)
+                        val sanitizedRecord = sanitizeRecord(record)
+                        if (record.optString("record_type") == "runtime_event" &&
+                            record.optString("event") == "capture_summary") {
+                            reportedNativeDroppedEvents += record.optLong("dropped_event_count", 0L)
+                                .coerceAtLeast(0L)
+                        }
+                        recordsSanitized++
+                        sanitizedRecord
+                    }.getOrElse {
+                        recordsDropped++
+                        // Parser exceptions can include the original JSON or private payload bytes.
+                        JSONObject().put("sanitizationError", "invalid_capture_record").put("rawLineDropped", true)
+                    }
                     writer.append(sanitized.toString()).append('\n')
                 }
             }
         }
+        return JsonLinesSanitizationResult(recordsSanitized, recordsDropped, reportedNativeDroppedEvents)
     }
 
     fun sanitizeTextFile(source: File, destination: File) {
@@ -482,6 +561,9 @@ internal class CaptureSanitizer(private val pseudonymizer: CampaignPseudonymizer
     }
 
     internal fun sanitizeRecord(record: JSONObject): JSONObject {
+        if (record.optString("record_type") in setOf("transport_payload", "sip_message")) {
+            sanitizeCapturedMessage(record)
+        }
         listOf(
             "source_address",
             "destination_address",
@@ -497,54 +579,113 @@ internal class CaptureSanitizer(private val pseudonymizer: CampaignPseudonymizer
                 record.put(field, pseudonymizer.token(field, record.optString(field)))
             }
         }
-        val headers = record.optJSONArray("headers")
-        if (headers != null) {
-            for (index in 0 until headers.length()) {
-                val header = headers.getJSONObject(index)
-                val name = header.optString("name")
-                val value = when (name.lowercase()) {
-                    in credentialHeaders -> "<redacted>"
-                    "call-id", "i" -> pseudonymizer.token("call-id", header.optString("value").trim())
-                    else -> sanitizeText(header.optString("value"))
-                }
-                header.put("value", value)
-            }
-        }
-        val recognizedSip = record.optBoolean("recognized_sip", false)
-        for (field in listOf("payload_base64", "body_base64")) {
-            val encoded = record.optString(field)
-            if (encoded.isEmpty()) continue
-            if (!recognizedSip) {
-                record.put(field, JSONObject.NULL)
-                record.put("unrecognizedPayloadRemoved", true)
-                continue
-            }
-            val decoded = String(Base64.getDecoder().decode(encoded), StandardCharsets.ISO_8859_1)
-            val sanitized = sanitizeSip(decoded).toByteArray(StandardCharsets.ISO_8859_1)
-            record.put(field, Base64.getEncoder().encodeToString(sanitized))
-        }
-        sanitizeNestedStrings(record)
+        sanitizeNestedStrings(
+            record,
+            if (record.optString("record_type") in setOf("transport_payload", "sip_message")) {
+                setOf("headers", "start_line", "reason")
+            } else emptySet()
+        )
         record.put("sanitized", true)
         return record
     }
 
-    internal fun sanitizeSip(value: String): String {
-        var redactContinuation = false
-        return value.lineSequence().joinToString("\r\n") { line ->
-            if ((line.startsWith(' ') || line.startsWith('\t')) && redactContinuation) {
-                " <redacted>"
-            } else {
-                val name = line.substringBefore(':', "")
-                redactContinuation = name.lowercase() in credentialHeaders
-                when {
-                    redactContinuation -> "$name: <redacted>"
-                    name.equals("Call-ID", true) || name == "i" -> {
-                        "$name: ${pseudonymizer.token("call-id", line.substringAfter(':').trim())}"
-                    }
-                    else -> sanitizeText(line)
-                }
+    private fun sanitizeCapturedMessage(record: JSONObject) {
+        val payload = runCatching {
+            val encoded = record.getString("payload_base64")
+            require(encoded.length <= ((SipMessageFraming.MAX_MESSAGE_BYTES + 2) / 3) * 4)
+            Base64.getDecoder().decode(encoded)
+        }.getOrNull()
+        val parsed = payload?.let {
+            SipMessageFraming.parseComplete(
+                it,
+                requireContentLength = !record.optString("transport").equals("udp", true)
+            )
+        }
+        if (parsed == null) {
+            stripUnvalidatedMessage(record)
+            return
+        }
+
+        // Native fragment fields are not authoritative: a body continuation can look like
+        // a header. Recreate every textual view from the same validated complete frame.
+        val rawHeaders = parsed.headers
+        fun firstHeader(vararg names: String): String = rawHeaders.firstOrNull { entry ->
+            names.any { name -> entry.first.equals(name, true) }
+        }?.second.orEmpty()
+        val sanitizedBody = sanitizeText(String(parsed.body, StandardCharsets.ISO_8859_1))
+            .toByteArray(StandardCharsets.ISO_8859_1)
+        val headers = rawHeaders.map { (name, value) ->
+            name to when (name.lowercase()) {
+                in credentialHeaders -> "<redacted>"
+                "call-id", "i" -> pseudonymizer.token("call-id", value.trim())
+                "content-length", "l" -> sanitizedBody.size.toString()
+                else -> sanitizeText(value)
             }
         }
+        val startLine = sanitizeText(parsed.startLine)
+        val sanitizedPayload = buildString {
+            append(startLine).append("\r\n")
+            headers.forEach { (name, value) -> append(name).append(": ").append(value).append("\r\n") }
+            append("\r\n")
+            append(String(sanitizedBody, StandardCharsets.ISO_8859_1))
+        }.toByteArray(StandardCharsets.ISO_8859_1)
+        record.put("recognized_sip", true)
+            .put("complete", true)
+            .put("start_line", startLine)
+            .put("method", parsed.method)
+            .put("status", parsed.status)
+            .put("reason", sanitizeText(parsed.reason))
+            .put("headers", JSONArray().apply {
+                headers.forEach { (name, value) -> put(JSONObject().put("name", name).put("value", value)) }
+            })
+            .put("payload_base64", Base64.getEncoder().encodeToString(sanitizedPayload))
+            .put("body_base64", Base64.getEncoder().encodeToString(sanitizedBody))
+            .put("call_id", firstHeader("call-id", "i").trim())
+        record.remove("unrecognizedPayloadRemoved")
+
+        // Only validated header values may contribute correlation identifiers.
+        fun parameter(value: String, name: String): String = Regex(
+            "(?i)(?:^|;)[ \\t]*${Regex.escape(name)}[ \\t]*=[ \\t]*([^;>,\\s]+)"
+        ).find(value)?.groupValues?.get(1).orEmpty().trim('"')
+        record.put("via_branch", parameter(firstHeader("via", "v"), "branch"))
+            .put("from_tag", parameter(firstHeader("from", "f"), "tag"))
+            .put("to_tag", parameter(firstHeader("to", "t"), "tag"))
+        val cseq = firstHeader("cseq").trim().split(Regex("[ \\t]+"), limit = 2)
+        record.put("cseq", cseq.getOrNull(0).orEmpty())
+            .put("cseq_method", cseq.getOrNull(1).orEmpty())
+    }
+
+    private fun stripUnvalidatedMessage(record: JSONObject) {
+        val safeEnums = mapOf(
+            "record_type" to setOf("transport_payload", "sip_message"),
+            "direction" to setOf("incoming", "outgoing"),
+            "transport" to setOf("tcp", "udp"),
+            "capture_point" to setOf(
+                "decoded_transport", "application_send", "before_encrypt", "after_decrypt", "socket_send", "socket_receive"
+            )
+        )
+        val tokenFields = setOf(
+            "source_address", "destination_address", "payload_hash_fnv1a64", "retransmission_key",
+            "run_id", "stream_id", "flow_id", "connection_id"
+        )
+        record.keys().asSequence().toList().forEach { key ->
+            val value = record.opt(key)
+            when {
+                key in safeEnums && value is String && value.lowercase() in safeEnums.getValue(key) -> Unit
+                key in tokenFields && value is String -> {
+                    if (key !in setOf("source_address", "destination_address", "payload_hash_fnv1a64", "retransmission_key")) {
+                        record.put(key, pseudonymizer.token(key, value))
+                    }
+                }
+                value is Number || value is Boolean -> Unit
+                else -> record.remove(key)
+            }
+        }
+        record.put("recognized_sip", false)
+            .put("complete", false)
+            .put("payload_base64", JSONObject.NULL)
+            .put("body_base64", JSONObject.NULL)
+            .put("unrecognizedPayloadRemoved", true)
     }
 
     internal fun sanitizeText(value: String): String {
@@ -564,10 +705,10 @@ internal class CaptureSanitizer(private val pseudonymizer: CampaignPseudonymizer
         return result
     }
 
-    private fun sanitizeNestedStrings(value: Any?) {
+    private fun sanitizeNestedStrings(value: Any?, skipKeys: Set<String> = emptySet()) {
         when (value) {
             is JSONObject -> value.keys().asSequence().toList().forEach { key ->
-                if (key == "payload_base64" || key == "body_base64") return@forEach
+                if (key == "payload_base64" || key == "body_base64" || key in skipKeys) return@forEach
                 when (val child = value.opt(key)) {
                     is String -> value.put(key, sanitizeText(child))
                     else -> sanitizeNestedStrings(child)

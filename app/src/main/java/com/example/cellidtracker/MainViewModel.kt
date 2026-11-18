@@ -24,7 +24,10 @@ import com.example.cellidtracker.data.ProbeRunRepository
 import com.example.cellidtracker.data.RecordedProbeResult
 import com.example.cellidtracker.experiment.ExperimentSessionRepository
 import com.example.cellidtracker.experiment.ResearchCaptureManager
-import com.example.cellidtracker.experiment.ResearchSessionConfig
+import com.example.cellidtracker.experiment.ResearchExportRetryState
+import com.example.cellidtracker.experiment.automaticResearchSessionConfig
+import com.example.cellidtracker.experiment.startCapturedExperimentSession
+import com.example.cellidtracker.experiment.buildSessionExportMessage
 import com.example.cellidtracker.history.ProbeHistory
 import com.example.cellidtracker.history.exportHistoryToFile
 import com.example.cellidtracker.probe.ProbeEventFromNative
@@ -50,6 +53,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -117,6 +121,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     private val experimentSessionRepository = ExperimentSessionRepository(appContext, db)
     private val researchCaptureManager = ResearchCaptureManager(appContext)
+    private val researchExportRetryState = ResearchExportRetryState()
+    private var sessionExportInProgress = false
     private val probeRunRepository = ProbeRunRepository(db.probeRunDao())
     private val probeProcessCoordinator = ProbeProcessCoordinator()
     private val logLines = ArrayDeque<String>()
@@ -150,13 +156,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var autoRestartProbe by mutableStateOf(true)
         private set
-    var researchCaptureEnabled by mutableStateOf(false)
+    var isExperimentSessionBusy by mutableStateOf(true)
         private set
-    var campaignIdInput by mutableStateOf(loadOrCreateCampaignId())
-        private set
-    var conditionLabelInput by mutableStateOf("")
-        private set
-    var researchNotesInput by mutableStateOf("")
+    var experimentSessionError by mutableStateOf<String?>(null)
         private set
     var probeIntervalSeconds by mutableStateOf(DEFAULT_PROBE_INTERVAL_SECONDS)
         private set
@@ -185,9 +187,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopProbeForegroundServiceIfIdle()
         startLogBufferFlushLoop()
         viewModelScope.launch {
+            try {
+                loadActiveExperimentSession()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(LOGCAT_TAG, "Experiment session restore failed", error)
+                experimentSessionError = "Could not load session. Reopen the app."
+                showSnackbar(requireNotNull(experimentSessionError))
+            } finally {
+                isExperimentSessionBusy = false
+            }
             loadHistory()
             loadProbeRuns()
-            loadActiveExperimentSession()
         }
     }
 
@@ -201,26 +213,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAutoRestartProbeChange(value: Boolean) {
         autoRestartProbe = value
-    }
-
-    fun onResearchCaptureEnabledChange(value: Boolean) {
-        if (activeExperimentSessionDbId == null) researchCaptureEnabled = value
-    }
-
-    fun onCampaignIdChange(value: String) {
-        if (activeExperimentSessionDbId != null) return
-        campaignIdInput = value.take(80)
-        researchPreferences.edit()
-            .putString(CAMPAIGN_ID_PREFERENCE, campaignIdInput)
-            .apply()
-    }
-
-    fun onConditionLabelChange(value: String) {
-        if (activeExperimentSessionDbId == null) conditionLabelInput = value.take(80)
-    }
-
-    fun onResearchNotesChange(value: String) {
-        if (activeExperimentSessionDbId == null) researchNotesInput = value.take(500)
     }
 
     fun onProbeIntervalSecondsChange(value: Int) {
@@ -344,48 +336,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startExperimentSession() {
+        experimentSessionError?.let { showSnackbar(it); return }
+        if (isExperimentSessionBusy) return
         if (activeExperimentSessionDbId != null) {
             showSnackbar("An experiment session is already active.")
             return
         }
+        if (isRootRunning || isIntercarrierRunning) {
+            showSnackbar("Stop the probe before starting an experiment session.")
+            return
+        }
+        isExperimentSessionBusy = true
         viewModelScope.launch {
             try {
-                if (researchCaptureEnabled && campaignIdInput.trim().isEmpty()) {
-                    throw IOException("Campaign ID is required when research capture is enabled.")
-                }
-                if (researchCaptureEnabled && conditionLabelInput.trim().isEmpty()) {
-                    throw IOException("Condition label is required when research capture is enabled.")
-                }
-                val assets = if (researchCaptureEnabled) loadProbeAssets() else null
-                val session = experimentSessionRepository.start()
-                applyActiveExperimentSession(session)
-                if (researchCaptureEnabled) {
-                    withContext(Dispatchers.IO) {
-                        researchCaptureManager.begin(
-                            ResearchSessionConfig(
-                                sessionId = session.sessionId,
-                                campaignId = campaignIdInput.trim(),
-                                conditionLabel = conditionLabelInput.trim(),
-                                probeIntervalSeconds = probeIntervalSeconds,
-                                responseLimit = sessionProgressResponseLimit,
-                                autoRestart = autoRestartProbe,
-                                gitCommit = BuildConfig.GIT_COMMIT_SHA,
-                                notes = researchNotesInput.trim()
-                            ),
-                            requireNotNull(assets).bin,
-                            assets.rootExecutionDir
-                        )
+                val assets = loadProbeAssets()
+                val campaignId = loadOrCreateCampaignId()
+                val session = startCapturedExperimentSession(
+                    createSession = experimentSessionRepository::start,
+                    initializeCapture = { started ->
+                        withContext(Dispatchers.IO) {
+                            researchCaptureManager.begin(
+                                automaticResearchSessionConfig(
+                                    session = started,
+                                    campaignId = campaignId,
+                                    probeIntervalSeconds = probeIntervalSeconds,
+                                    responseLimit = sessionProgressResponseLimit,
+                                    autoRestart = autoRestartProbe,
+                                    gitCommit = BuildConfig.GIT_COMMIT_SHA
+                                ),
+                                assets.bin,
+                                assets.rootExecutionDir
+                            )
+                        }
+                    },
+                    abandonSession = { failed ->
+                        researchCaptureManager.closeSession()
+                        experimentSessionRepository.abandonStart(failed.id)
                     }
-                    startResearchContextLoop()
-                }
+                )
+                // Publish only after capture initialization has succeeded.
+                applyActiveExperimentSession(session)
+                startResearchContextLoop()
                 showSnackbar("Experiment session started: ${session.sessionId}")
-            } catch (e: Exception) {
-                showSnackbar("Start session failed: ${e.message ?: e}")
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                researchCaptureManager.closeSession()
+                // If cleanup itself failed, keep the surviving DB session available to export.
+                try {
+                    loadActiveExperimentSession()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (recoveryFailure: Exception) {
+                    Log.e(LOGCAT_TAG, "Session recovery after failed start failed", recoveryFailure)
+                    experimentSessionError = "Could not load session. Reopen the app."
+                }
+                showSnackbar("Start session failed: ${error.message ?: error}")
+            } finally {
+                isExperimentSessionBusy = false
             }
         }
     }
 
     fun stopExperimentSession() {
+        if (isExperimentSessionBusy || sessionExportInProgress) {
+            showSnackbar("Experiment session export is already in progress.")
+            return
+        }
         val sessionDbId = activeExperimentSessionDbId
         if (sessionDbId == null) {
             showSnackbar("No active experiment session.")
@@ -396,25 +413,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        sessionExportInProgress = true
+        isExperimentSessionBusy = true
         viewModelScope.launch {
             try {
                 researchContextJob?.cancel()
                 researchContextJob = null
-                val researchExport = withContext(Dispatchers.IO) {
-                    researchCaptureManager.writeDiagnosticLog(logLines.toList())
-                    researchCaptureManager.finish(
-                        "/data/local/tmp/cellidtracker-${android.os.Process.myUid()}"
-                    )
+                val researchExportResult = withContext(Dispatchers.IO) {
+                    researchExportRetryState.getOrCapture(sessionDbId) {
+                        check(researchCaptureManager.isActive()) {
+                            "SIP capture is unavailable for this session."
+                        }
+                        researchCaptureManager.writeDiagnosticLog(logLines.toList())
+                        researchCaptureManager.finish(
+                            "/data/local/tmp/cellidtracker-${android.os.Process.myUid()}"
+                        )
+                    }
                 }
                 val outFile = experimentSessionRepository.endAndExport(sessionDbId)
+                researchCaptureManager.closeSession()
                 clearActiveExperimentSessionState()
-                val suffix = researchExport?.let {
-                    " Research export: ${it.exportDirectory.absolutePath}"
-                }.orEmpty()
-                showSnackbar("Session exported: ${outFile.absolutePath}$suffix")
+                val message = buildSessionExportMessage(
+                    sessionFile = outFile,
+                    researchExport = researchExportResult.getOrNull(),
+                    researchExportFailure = researchExportResult.exceptionOrNull()
+                )
+                researchExportRetryState.clear(sessionDbId)
+                appendLogText("\n$message")
+                showSnackbar(message)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                loadActiveExperimentSession()
-                showSnackbar("Stop/export failed: ${e.message ?: e}")
+                // endAndExport may already have ended the DB session. Keep its id available
+                // for another export attempt, together with the original capture outcome.
+                showSnackbar("Stop/export failed: ${e.message ?: e}. Tap Stop & export to retry.")
+            } finally {
+                sessionExportInProgress = false
+                isExperimentSessionBusy = false
             }
         }
     }
@@ -440,6 +475,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startProbe() {
+        experimentSessionError?.let { showSnackbar(it); return }
+        if (isExperimentSessionBusy) {
+            showSnackbar("Wait for the experiment session to finish preparing or exporting.")
+            return
+        }
+        if (activeExperimentSessionDbId != null && !researchCaptureManager.isActive()) {
+            showSnackbar("SIP capture is unavailable. Export this session and start a new one.")
+            return
+        }
+        if (isExperimentExportPending()) {
+            showSnackbar("Finish exporting the experiment session before starting another probe.")
+            return
+        }
         if (isRootRunning || isIntercarrierRunning) {
             showSnackbar("Probe already running")
             return
@@ -528,6 +576,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startIntercarrierTest() {
+        experimentSessionError?.let { showSnackbar(it); return }
+        if (isExperimentSessionBusy) {
+            showSnackbar("Wait for the experiment session to finish preparing or exporting.")
+            return
+        }
+        if (activeExperimentSessionDbId != null && !researchCaptureManager.isActive()) {
+            showSnackbar("SIP capture is unavailable. Export this session and start a new one.")
+            return
+        }
+        if (isExperimentExportPending()) {
+            showSnackbar("Finish exporting the experiment session before starting another probe.")
+            return
+        }
         if (isRootRunning || isIntercarrierRunning) {
             showSnackbar("Probe already running")
             return
@@ -628,6 +689,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun prepareProbeRun(title: String): PreparedProbeRun {
+        check(activeExperimentSessionDbId == null || researchCaptureManager.isActive()) {
+            "SIP capture is unavailable. Export this session and start a new one."
+        }
         val assets = loadProbeAssets()
         if (currentVictimFromList(assets.workDir).isBlank()) {
             throw IOException("Target number is empty. Enter it and press Set victim first.")
@@ -984,16 +1048,30 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private suspend fun loadActiveExperimentSession() {
+        researchContextJob?.cancel()
+        researchContextJob = null
         val session = experimentSessionRepository.loadActive()
+        experimentSessionError = null
         applyActiveExperimentSession(session)
-        val restored = session != null && withContext(Dispatchers.IO) {
-            runCatching { researchCaptureManager.restore(session.sessionId) }
-                .onFailure { Log.e(LOGCAT_TAG, "Research capture restore failed", it) }
-                .getOrDefault(false)
+        if (session == null) {
+            researchCaptureManager.closeSession()
+            return
+        }
+        val restored = withContext(Dispatchers.IO) {
+            try {
+                researchCaptureManager.restore(session.sessionId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(LOGCAT_TAG, "Research capture restore failed", error)
+                false
+            }
         }
         if (restored) {
-            researchCaptureEnabled = true
             startResearchContextLoop()
+        } else {
+            researchCaptureManager.closeSession()
+            showSnackbar("SIP capture is unavailable. Export this session and start a new one.")
         }
     }
 
@@ -1031,11 +1109,15 @@ mcc=${parsed.mcc}, mnc=${parsed.mnc}, lac=${parsed.lac}, cellId=${parsed.cid}
     }
 
     private fun clearActiveExperimentSessionState() {
+        experimentSessionError = null
         activeExperimentSessionDbId = null
         activeExperimentSessionId = null
         activeExperimentStartedAtMillis = null
         probeResponseIntervalTracker.reset()
     }
+
+    private fun isExperimentExportPending(): Boolean = sessionExportInProgress ||
+        activeExperimentSessionDbId?.let(researchExportRetryState::isPending) == true
 
     private fun showSnackbar(message: String) {
         _events.tryEmit(MainUiEvent.ShowSnackbar(message))

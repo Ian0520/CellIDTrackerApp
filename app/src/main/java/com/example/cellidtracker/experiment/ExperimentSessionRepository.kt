@@ -39,6 +39,11 @@ internal class ExperimentSessionRepository(
         return session.copy(id = id)
     }
 
+    /** A capture setup failure must not leave an unusable session active. */
+    suspend fun abandonStart(sessionDbId: Long) = withContext(ioDispatcher) {
+        dao.endSession(sessionDbId, nowMillis())
+    }
+
     suspend fun endAndExport(sessionDbId: Long): File {
         withContext(ioDispatcher) {
             dao.endSession(sessionDbId, nowMillis())
