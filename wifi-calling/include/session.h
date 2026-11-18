@@ -81,6 +81,7 @@ public:
   void run(ESPConfig&& cfg, Application& application);
 
 private:
+  ssize_t receivePacket();
   void dissect(ssize_t rdcnt);
   void dissectIPv4(std::span<uint8_t> buffer);
   void dissectIPv6(std::span<uint8_t> buffer);
@@ -103,7 +104,7 @@ private:
 
   int sock;
   int mtu;
-  uint8_t recvBuffer[4096], *sendBuffer;
+  uint8_t recvBuffer[65536 + 40], *sendBuffer;
   ESPConfig config;
   SipState currentSipState;
   SipApp currentSipApp;

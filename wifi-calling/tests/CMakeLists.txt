@@ -3,6 +3,11 @@ project(ProbeEventContractTests LANGUAGES CXX)
 
 enable_testing()
 
+add_executable(packet_capture_quality_test packet_capture_quality_test.cpp)
+target_include_directories(packet_capture_quality_test PRIVATE ../include)
+target_compile_features(packet_capture_quality_test PRIVATE cxx_std_20)
+add_test(NAME packet_capture_quality_test COMMAND packet_capture_quality_test)
+
 add_executable(
   probe_event_contract_test
   probe_event_contract_test.cpp
@@ -60,3 +65,14 @@ target_compile_features(sip_capture_test PRIVATE cxx_std_20)
 find_package(Threads REQUIRED)
 target_link_libraries(sip_capture_test PRIVATE Threads::Threads)
 add_test(NAME sip_capture_test COMMAND sip_capture_test)
+
+# Offline fidelity checks against locally held captures; no network or phones.
+add_executable(
+  sip_capture_replay
+  sip_capture_replay.cpp
+  ../source/sip_capture.cpp
+  ../source/sip_response.cpp
+)
+target_include_directories(sip_capture_replay PRIVATE ../include)
+target_compile_features(sip_capture_replay PRIVATE cxx_std_20)
+target_link_libraries(sip_capture_replay PRIVATE Threads::Threads)

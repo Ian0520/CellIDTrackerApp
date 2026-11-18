@@ -168,16 +168,21 @@ std::string headersJson(const std::vector<HeaderEntry>& headers) {
 }
 
 std::string headerValue(const std::vector<HeaderEntry>& headers,
-                        std::string_view name) {
+                        std::string_view name,
+                        std::string_view compactName = {}) {
   for (const auto& header : headers) {
-    if (equalsIgnoreCase(header.name, name)) return trim(header.value);
+    const auto headerName = trim(header.name);
+    if (equalsIgnoreCase(headerName, name) ||
+        (!compactName.empty() && equalsIgnoreCase(headerName, compactName))) {
+      return trim(header.value);
+    }
   }
   return "";
 }
 
 std::string parameterValue(std::string_view value, std::string_view parameter) {
   const std::regex pattern(
-      "(?:^|;)\\s*" + std::string(parameter) + "=([^;>\\s]+)",
+      "(?:^|;)\\s*" + std::string(parameter) + "\\s*=\\s*([^;>,\\s]+)",
       std::regex_constants::icase);
   std::match_results<std::string_view::const_iterator> match;
   if (std::regex_search(value.begin(), value.end(), match, pattern) &&
@@ -185,6 +190,78 @@ std::string parameterValue(std::string_view value, std::string_view parameter) {
     return std::string(match[1].first, match[1].second);
   }
   return "";
+}
+
+std::string_view startLine(std::string_view payload) {
+  const auto end = payload.find('\n');
+  auto line = payload.substr(0, end);
+  if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+  return line;
+}
+
+bool isAsciiAlpha(unsigned char value) {
+  return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
+}
+
+bool isAsciiDigit(unsigned char value) {
+  return value >= '0' && value <= '9';
+}
+
+bool isMethodToken(std::string_view method) {
+  return !method.empty() &&
+      std::all_of(method.begin(), method.end(), [](unsigned char value) {
+        return isAsciiAlpha(value) || isAsciiDigit(value) ||
+            std::string_view("-.!%*_+`'~").find(value) != std::string_view::npos;
+      });
+}
+
+bool isAbsoluteUri(std::string_view uri) {
+  const auto colon = uri.find(':');
+  if (colon == std::string_view::npos || colon == 0 || colon + 1 == uri.size() ||
+      !isAsciiAlpha(uri.front())) {
+    return false;
+  }
+  if (!std::all_of(uri.begin() + 1, uri.begin() + colon, [](unsigned char value) {
+        return isAsciiAlpha(value) || isAsciiDigit(value) || value == '+' ||
+            value == '-' || value == '.';
+      })) {
+    return false;
+  }
+  return std::all_of(uri.begin() + colon + 1, uri.end(), [](unsigned char value) {
+    return value > 0x20 && value < 0x7f;
+  });
+}
+
+sip_response::Message parseCaptureMessage(
+    std::string_view payload, const std::vector<HeaderEntry>& headers) {
+  const auto line = startLine(payload);
+  sip_response::Message parsed;
+  const auto methodEnd = line.find(' ');
+  if (methodEnd != std::string_view::npos) {
+    const auto uriEnd = line.find(' ', methodEnd + 1);
+    if (uriEnd != std::string_view::npos &&
+        isMethodToken(line.substr(0, methodEnd)) &&
+        isAbsoluteUri(line.substr(methodEnd + 1, uriEnd - methodEnd - 1)) &&
+        line.substr(uriEnd + 1) == "SIP/2.0") {
+      parsed.type = sip_response::MessageType::REQUEST;
+      parsed.method = line.substr(0, methodEnd);
+      parsed.uri = line.substr(methodEnd + 1, uriEnd - methodEnd - 1);
+    }
+  }
+  if (!parsed.recognized() && line.size() >= 12 &&
+      line.substr(0, 8) == "SIP/2.0 " && isAsciiDigit(line[8]) &&
+      isAsciiDigit(line[9]) && isAsciiDigit(line[10]) && line[11] == ' ') {
+    // Retain the live response parser's behavior (including coalesced responses),
+    // but never classify a transport payload from SIP-looking text in its body.
+    parsed = sip_response::parse(payload);
+  }
+  if (parsed.recognized()) {
+    // Capture complete requests independently of the live parser's legacy
+    // request handling. Correlation identifiers must come from actual headers.
+    parsed.callId = headerValue(headers, "Call-ID", "i");
+    parsed.branch = parameterValue(headerValue(headers, "Via", "v"), "branch");
+  }
+  return parsed;
 }
 
 std::span<const std::uint8_t> messageBody(std::span<const std::uint8_t> payload) {
@@ -355,8 +432,8 @@ std::string SipCaptureRecorder::serialize(const PendingRecord& record) {
 
   const std::string body(
       reinterpret_cast<const char*>(record.payload.data()), record.payload.size());
-  const auto parsed = sip_response::parse(body);
   const auto headers = captureHeaders(body);
+  const auto parsed = parseCaptureMessage(body, headers);
   const auto payloadHash = fnv1a64(record.payload);
   const auto cseqValue = headerValue(headers, "CSeq");
   std::string cseq;
@@ -365,8 +442,8 @@ std::string SipCaptureRecorder::serialize(const PendingRecord& record) {
     std::istringstream input(cseqValue);
     input >> cseq >> cseqMethod;
   }
-  const auto fromTag = parameterValue(headerValue(headers, "From"), "tag");
-  const auto toTag = parameterValue(headerValue(headers, "To"), "tag");
+  const auto fromTag = parameterValue(headerValue(headers, "From", "f"), "tag");
+  const auto toTag = parameterValue(headerValue(headers, "To", "t"), "tag");
   const auto dialogId = fnv1a64(parsed.callId + "|" + fromTag + "|" + toTag);
   const auto retransmissionKey = fnv1a64(
       record.metadata.direction + "|" + record.metadata.capturePoint + "|" +

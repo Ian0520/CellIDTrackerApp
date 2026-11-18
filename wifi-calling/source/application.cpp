@@ -125,8 +125,7 @@ bool Application::handleIncomingPackets(const int nReady) {
     return false;
   }
   if (nReady > 0) {
-    const ssize_t readCount =
-        read(session.sock, session.recvBuffer, sizeof(session.recvBuffer));
+    const ssize_t readCount = session.receivePacket();
     if (readCount < 0) {
       if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return true;
       return false;

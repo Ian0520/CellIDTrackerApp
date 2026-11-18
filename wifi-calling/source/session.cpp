@@ -26,12 +26,30 @@
 #include "probe_event.h"
 #include "probe_state_machine.h"
 #include "sip_response.h"
+#include "packet_capture_quality.h"
 
 
 #define IPV6_VERSION 0x60
 constexpr size_t BUFFER_THRESHOLD = 1 << 16;
 
 namespace {
+bool recordPacketIssue(SipCaptureRecorder& capture,
+                       packet_capture_quality::Inspection inspection,
+                       const char* protocol,
+                       std::size_t capturedBytes) {
+  using packet_capture_quality::Issue;
+  if (inspection.issue == Issue::NONE) return false;
+  const char* event = inspection.issue == Issue::FRAGMENTED ? "packet_fragment"
+      : inspection.issue == Issue::TRUNCATED ? "packet_incomplete"
+      : inspection.issue == Issue::UNSUPPORTED_EXTENSION ? "packet_unsupported_extension"
+      : "packet_invalid_length";
+  capture.recordRuntimeEvent(event,
+      std::string("protocol=") + protocol + ";captured_bytes=" +
+      std::to_string(capturedBytes) + ";declared_bytes=" +
+      std::to_string(inspection.declaredBytes));
+  return true;
+}
+
 #pragma pack(push)
 #pragma pack(1)
   struct ESPHeader {
@@ -187,7 +205,7 @@ void Session::run(ESPConfig&& cfg, Application& application) {
     if (nReady < 0 && errno != EINTR) return;
     if (util::context.shouldStop) return;
     if (nReady > 0) {
-      ssize_t readCount = read(sock, recvBuffer, sizeof(recvBuffer));
+      ssize_t readCount = receivePacket();
       if (readCount < 0) return;
       dissect(readCount);
     } else if (nReady == 0) {
@@ -212,9 +230,26 @@ void Session::run(ESPConfig&& cfg, Application& application) {
 
 }
 
+ssize_t Session::receivePacket() {
+  const auto received = recv(sock, recvBuffer, sizeof(recvBuffer), MSG_TRUNC);
+  if (received > static_cast<ssize_t>(sizeof(recvBuffer))) {
+    capture.recordRuntimeEvent("packet_receive_truncated",
+        "captured_bytes=" + std::to_string(sizeof(recvBuffer)) +
+        ";declared_bytes=" + std::to_string(received));
+    return 0;
+  }
+  return received;
+}
+
 void Session::dissect(ssize_t rdcnt) {
+  if (rdcnt <= 0) return;
+  const auto inspected = packet_capture_quality::inspectIp(
+      std::span<const std::uint8_t>(recvBuffer, static_cast<std::size_t>(rdcnt)));
+  // Fragmented IP packets must not be interpreted as fresh ESP/TCP/UDP headers.
+  // They remain an explicit capture limitation until IP reassembly is supported.
+  if (recordPacketIssue(capture, inspected, "ip", rdcnt)) return;
   uint8_t version = recvBuffer[0] >> 4;
-  auto payload = std::span{recvBuffer, recvBuffer + rdcnt};
+  auto payload = std::span{recvBuffer, recvBuffer + inspected.declaredBytes};
   switch (version) {
     case 4:
       dissectIPv4(payload);
@@ -282,6 +317,13 @@ void Session::dissectIPv6(std::span<uint8_t> buffer) {
 }
 
 void Session::dissectESP(std::span<uint8_t> buffer, bool receivePacket) {
+  const auto hashBytes = static_cast<std::size_t>(config.aalg->hashLength());
+  const auto minimumBytes = sizeof(ESPHeader) + hashBytes + sizeof(ESPTrailer);
+  if (buffer.size() < minimumBytes) {
+    recordPacketIssue(capture, {packet_capture_quality::Issue::TRUNCATED, minimumBytes},
+        "esp", buffer.size());
+    return;
+  }
   if (util::context.verbose > 1) std::cout << "Layer: ESP" << std::endl;
   auto&& hdr = *reinterpret_cast<ESPHeader*>(buffer.data());
   state.observedEspSequence = ntohl(hdr.seq);
@@ -309,9 +351,19 @@ void Session::dissectESP(std::span<uint8_t> buffer, bool receivePacket) {
     data = config.ealg->decrypt(buffer);
     buffer = std::span{data};
   }
+  if (buffer.size() < sizeof(ESPTrailer)) {
+    recordPacketIssue(capture, {packet_capture_quality::Issue::TRUNCATED, sizeof(ESPTrailer)},
+        "esp", buffer.size());
+    return;
+  }
   auto&& trailer = *reinterpret_cast<ESPTrailer*>(buffer.last(sizeof(ESPTrailer)).data());
   auto paddingLen = trailer.padlen;
   auto nextProtocol = trailer.next;
+  if (static_cast<std::size_t>(paddingLen) + sizeof(ESPTrailer) > buffer.size()) {
+    recordPacketIssue(capture, {packet_capture_quality::Issue::INVALID_LENGTH,
+        static_cast<std::size_t>(paddingLen) + sizeof(ESPTrailer)}, "esp", buffer.size());
+    return;
+  }
   auto payload = buffer.first(buffer.size() - paddingLen - sizeof(ESPTrailer));
   if (!receivePacket) {
     state.espseq = ntohl(hdr.seq);
@@ -333,10 +385,17 @@ void Session::dissectESP(std::span<uint8_t> buffer, bool receivePacket) {
 }
 
 void Session::dissectTCP(std::span<uint8_t> buffer, bool receivePacket) {
+  if (recordPacketIssue(capture, packet_capture_quality::inspectTcp(buffer),
+      "tcp", buffer.size())) return;
   if (util::context.verbose > 1) std::cout << "Layer: TCP" << std::endl;
   state.ack = true;
   auto&& hdr = *reinterpret_cast<tcphdr*>(buffer.data());
-  if (hdr.rst) exit(EXIT_FAILURE);
+  // Empty control packets still delimit capture streams. Events contain no endpoints.
+  if (hdr.syn) capture.recordRuntimeEvent("tcp_connection_boundary", "kind=syn");
+  if (hdr.rst) {
+    capture.recordRuntimeEvent("tcp_connection_boundary", "kind=rst");
+    exit(EXIT_FAILURE);
+  }
   auto length = hdr.doff << 2;
   auto payload = buffer.last(buffer.size() - length);
   if (receivePacket) {
@@ -345,7 +404,10 @@ void Session::dissectTCP(std::span<uint8_t> buffer, bool receivePacket) {
     state.srcPort = hdr.dest;
     state.dstPort = hdr.source;
   }
-  if (payload.empty()) return;
+  if (payload.empty()) {
+    if (hdr.fin) capture.recordRuntimeEvent("tcp_connection_boundary", "kind=fin");
+    return;
+  }
   capture.recordPayload(payload, SipCaptureMetadata{
       .direction = receivePacket ? "incoming" : "outgoing",
       .capturePoint = "decoded_transport",
@@ -359,13 +421,16 @@ void Session::dissectTCP(std::span<uint8_t> buffer, bool receivePacket) {
       .tcpAcknowledgment = ntohl(hdr.ack_seq),
       .espSequence = state.observedEspSequence,
       .encryptedPacketSize = state.observedEspPacketSize});
+  if (hdr.fin) capture.recordRuntimeEvent("tcp_connection_boundary", "kind=fin");
   dissectSIP(payload, receivePacket);
 }
 
 void Session::dissectUDP(std::span<uint8_t> buffer, bool receivePacket) {
+  const auto inspected = packet_capture_quality::inspectUdp(buffer);
+  if (recordPacketIssue(capture, inspected, "udp", buffer.size())) return;
   if (util::context.verbose > 1) std::cout << "Layer: UDP" << std::endl;
   auto&& hdr = *reinterpret_cast<udphdr*>(buffer.data());
-  auto payload = buffer.last(buffer.size() - sizeof(udphdr));
+  auto payload = buffer.first(inspected.declaredBytes).subspan(sizeof(udphdr));
   if (payload.empty()) return;
   capture.recordPayload(payload, SipCaptureMetadata{
       .direction = receivePacket ? "incoming" : "outgoing",
