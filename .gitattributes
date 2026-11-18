@@ -1,0 +1,2 @@
+# Preserve whitespace inside historical patch context and added source lines.
+patches/*.patch -whitespace

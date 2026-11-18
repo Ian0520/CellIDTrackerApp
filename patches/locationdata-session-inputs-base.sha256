@@ -1,0 +1,5 @@
+f1ecebcd88e5618cf551f49a67d1f648362df109b065e541e58a7d31b6d343b8  README.md
+516254892382a5d341725276a586c7c63f011fb2e19989219d06de0618af92e6  app/src/main/java/com/example/locationdata/GroundTruthViewModel.kt
+d3bf32ad1419323ebedf67c4aecae815fc670843232022dc68f8017d2ff772fb  app/src/main/java/com/example/locationdata/IndoorMarkers.kt
+59da201b1ff48d7f42cae0d9e3155a74ba3ebd169cb77486c792edd22d47377f  app/src/main/java/com/example/locationdata/MainActivity.kt
+9f0e44cc00036eb6aaf549523968a9ffec2ba2589e6d372b7f90832f7a2ae570  app/src/test/java/com/example/locationdata/GroundTruthCaptureTest.kt

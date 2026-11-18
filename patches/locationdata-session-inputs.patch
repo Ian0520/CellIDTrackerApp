@@ -1,0 +1,849 @@
+--- a/README.md
++++ b/README.md
+@@ -7,7 +7,8 @@
+ ## Capture Behavior
+ 
+ - A session ID is generated from local date and time using `yyyyMMdd_HHmmss_SSS`.
+-- A campaign ID is generated as `sipobs_YYYYMMDD` on first use and retained across blocks, app restarts, and later days until edited.
++- A campaign ID is generated as `sipobs_YYYYMMDD` on first use and retained internally. No campaign or condition typing is required.
++- New sessions use their generated session ID for both `conditionLabel` and the compatible `scenarioId` alias. Existing unfinished sessions retain their original metadata when restored. Pair caller/target recordings using session records and timestamps; these automatic IDs do not synchronize the phones.
+ - The session ID is also used as the JSON filename.
+ - Fused high-accuracy location is requested approximately once per second.
+ - The foreground service requests one radio/environment sample per second independently of fused location callbacks. Indoor location silence does not stop Cell recording.
+@@ -48,8 +49,8 @@
+ | `schemaVersion` | integer | Export schema version, currently `7`. |
+ | `appType` | string | Always `ground_truth`. |
+ | `sessionId` | string | Date/time-based session identifier. |
+-| `campaignId` | string | Shared identifier entered on both phones for every block in one campaign. |
+-| `conditionLabel` | string | Controlled block label such as `day1_network_a_first`. |
++| `campaignId` | string | Automatically generated and retained internally. Restored recordings keep their original value. |
++| `conditionLabel` | string | Generated session ID for new captures; legacy recordings retain their original label. |
+ | `scenarioId` | string | Backward-compatible alias of `conditionLabel`. |
+ | `startedAtMillis` | integer | Session start as Unix epoch milliseconds. |
+ | `endedAtMillis` | integer | Session end as Unix epoch milliseconds. |
+@@ -60,7 +61,7 @@
+ | `device` | object | Device and Android metadata. |
+ | `samples` | array | Ordered ground-truth samples. |
+ | `captureConfig` | object | Requested intervals, debounce threshold, and screen policy. |
+-| `initialIndoorLabel` | object/null | Optional user-entered building, floor, point and route at session start. |
++| `initialIndoorLabel` | object/null | Optional selected building, floor, point and route at session start. |
+ | `manualEvents` | array | User-marked `{timestampMillis, label, indoorLabel}` checkpoints during capture. |
+ 
+ ### Device Metadata
+@@ -275,9 +276,10 @@
+ 
+ ## Indoor checkpoint workflow (schema 7)
+ 
+-1. Before Start, optionally enter building, known floor, point and route; verify retained labels from the previous session.
+-2. Start recording. Use **Arrived at point**, **Start moving**, **Start floor change**, and **End floor change** at the relevant checkpoints. Update the floor/point before marking arrival.
+-3. Each event saves the label values at that instant. Later field edits do not rewrite earlier events. Blank labels remain unspecified; the app does not infer floor truth from altitude or assign each intervening sample automatically.
++1. Enter a building name once, then reuse it from recent choices. Tap the floor and select an existing point, or tap **New point** to create a code such as `P01`. Custom floor/point names and route labels are optional expanded controls. Numbering is retained separately for each building/floor; route codes are scoped to the building.
++2. **Start** confirms the visible selected labels and starts recording; no campaign/condition entry is required. After reopening the app, floor/point/route selections begin blank, while remembered choices remain one tap away. Unspecified labels do not prevent ordinary radio recording.
++3. During capture, use **Arrived at point**, **Start moving**, **Start floor change**, and **End floor change**. Movement records the departure label and clears the point. Starting a floor change also clears the floor; select the actual arrival floor before marking its end. Changing the building clears dependent labels, and changing the floor clears the point.
++4. Each checkpoint saves the label values at that instant. Editing labels alone does not create ground truth for intervening samples. Point codes identify places you choose; the app does not locate them or infer floors from altitude. Optional custom event text is collapsed during capture.
+ 4. Stop & export. Preserve null-location rows for radio/sequence analysis; use the known checkpoints for indoor truth.
+ 
+ Schema 7 is a breaking change for consumers that assume all rows have location coordinates or use `elapsedRealtimeNanos` as the sampling time. Use `recordedAtMillis` for cross-phone alignment and `capturedElapsedRealtimeNanos` for same-phone cadence. A recovered unfinished journal can contain legacy rows and new schema-7 rows; absent new fields must stay unknown rather than being synthesized. Cell age limits here describe the Android local API and do not change the caller-CNI freshness assumption.
+--- a/app/src/main/java/com/example/locationdata/GroundTruthViewModel.kt
++++ b/app/src/main/java/com/example/locationdata/GroundTruthViewModel.kt
+@@ -36,6 +36,7 @@
+ private const val MAX_PENDING_PERSISTENCE_TASKS = 120
+ private const val RESEARCH_PREFERENCES = "research_preferences"
+ private const val CAMPAIGN_ID_PREFERENCE = "campaign_id"
++private const val INDOOR_LABEL_CHOICES_PREFERENCE = "indoor_label_choices"
+ 
+ enum class MovementClass(val wireValue: String) {
+     STATIONARY("stationary"),
+@@ -138,11 +139,26 @@
+     private val samplingExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+     var captureStartedElapsedRealtimeNanos by mutableStateOf<Long?>(null)
+         private set
+-    var indoorLabel by mutableStateOf(
+-        runCatching { JSONObject(researchPreferences.getString("indoor_label", "{}")!!).toIndoorLabel() }
+-            .getOrDefault(IndoorLabel())
+-    )
+-        private set
++    private val rememberedIndoorLabel = runCatching {
++        JSONObject(researchPreferences.getString("indoor_label", "{}")!!).toIndoorLabel()
++    }.getOrDefault(IndoorLabel())
++    private val indoorLabelChoices = mutableStateListOf<IndoorLabel>().apply {
++        addAll(loadIndoorLabelChoices(researchPreferences.getString(INDOOR_LABEL_CHOICES_PREFERENCE, null), rememberedIndoorLabel))
++    }
++    // Saved choices are suggestions, never an assertion of the phone's current floor/point.
++    var indoorLabel by mutableStateOf(IndoorLabel(building = rememberedIndoorLabel.building))
++        private set
++    val recentBuildings: List<String>
++        get() = indoorLabelChoices.map { it.building }.filter(String::isNotBlank).distinct().take(8)
++    val recentFloors: List<String>
++        get() = indoorLabelChoices.filter { it.building == indoorLabel.building }
++            .map { it.floor }.filter(String::isNotBlank).distinct().take(12)
++    val recentPoints: List<String>
++        get() = indoorLabelChoices.filter { it.building == indoorLabel.building && it.floor == indoorLabel.floor }
++            .map { it.point }.filter(String::isNotBlank).distinct().take(12)
++    val recentRoutes: List<String>
++        get() = indoorLabelChoices.filter { it.building == indoorLabel.building }
++            .map { it.route }.filter(String::isNotBlank).distinct().take(8)
+     private var initialIndoorLabel: IndoorLabel? = null
+     private var samplingInFlight = false
+     private var captureEpoch = 0L
+@@ -170,8 +186,7 @@
+         private set
+     var lastExportPath by mutableStateOf<String?>(null)
+         private set
+-    var campaignIdInput by mutableStateOf(loadOrCreateCampaignId())
+-    var scenarioIdInput by mutableStateOf("")
++    private var campaignId = loadOrCreateCampaignId()
+     var keepScreenOnDuringCapture by mutableStateOf(false)
+     var activeCampaignId by mutableStateOf<String?>(null)
+         private set
+@@ -196,25 +211,11 @@
+         restoreActiveSessionIfPresent()
+     }
+ 
+-    fun onCampaignIdChange(value: String) {
+-        campaignIdInput = value.take(80)
+-        researchPreferences.edit()
+-            .putString(CAMPAIGN_ID_PREFERENCE, campaignIdInput)
+-            .apply()
+-    }
+-
+     fun startSession(): Boolean {
+         if (activeSessionId != null || isRecording || isRestoring || isExporting) return false
+-        val campaignId = campaignIdInput.trim()
+-        val conditionLabel = scenarioIdInput.trim()
+-        if (campaignId.isBlank() || conditionLabel.isBlank()) {
+-            statusText = "Campaign ID and condition label are required"
+-            appendLog("Capture not started: missing campaign ID or condition label")
+-            return false
+-        }
+-
+         val now = System.currentTimeMillis()
+         val sessionId = generateTimestampSessionId(now)
++        val conditionLabel = sessionId
+         val journalFileName = sessionStore.newJournalFileName(sessionId)
+         val journalPrepared = runCatching { sessionStore.prepareNewJournal(journalFileName) }
+         if (journalPrepared.isFailure) {
+@@ -229,7 +230,9 @@
+         startedAtMillis = now
+         captureEpoch += 1
+         captureStartedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
++        updateIndoorLabelSelection(indoorLabel.normalized())
+         initialIndoorLabel = indoorLabel
++        rememberIndoorLabel(indoorLabel)
+         isRecording = true
+         latestSample = null
+         latestLocation = null
+@@ -406,14 +409,94 @@
+     }
+ 
+     fun onIndoorLabelChange(value: IndoorLabel) {
++        if (isRestoring || isExporting) return
++        val bounded = value.copy(
++            building = value.building.take(80), floor = value.floor.take(80),
++            point = value.point.take(80), route = value.route.take(80)
++        )
++        updateIndoorLabelSelection(when {
++            bounded.building != indoorLabel.building -> bounded.copy(floor = "", point = "", route = "")
++            bounded.floor != indoorLabel.floor -> bounded.copy(point = "")
++            else -> bounded
++        })
++    }
++
++    fun onNewPoint() {
++        if (isRestoring || isExporting) return
++        updateIndoorLabelSelection(indoorLabel.normalized())
++        val used = indoorLabelChoices.filter { it.building == indoorLabel.building && it.floor == indoorLabel.floor }
++            .map { it.point } + indoorLabel.point
++        updateIndoorLabelSelection(indoorLabel.copy(point = allocateIndoorCode("P", listOf(indoorLabel.building, indoorLabel.floor), used)))
++        rememberIndoorLabel(indoorLabel)
++    }
++
++    fun onNewRoute() {
++        if (isRestoring || isExporting) return
++        updateIndoorLabelSelection(indoorLabel.normalized())
++        val used = indoorLabelChoices.filter { it.building == indoorLabel.building }.map { it.route } + indoorLabel.route
++        updateIndoorLabelSelection(indoorLabel.copy(route = allocateIndoorCode("R", listOf(indoorLabel.building), used)))
++        rememberIndoorLabel(indoorLabel)
++    }
++
++    private fun updateIndoorLabelSelection(value: IndoorLabel) {
+         indoorLabel = value
+         researchPreferences.edit().putString("indoor_label", value.toJson().toString()).apply()
+     }
+ 
++    private fun allocateIndoorCode(prefix: String, scope: List<String>, used: List<String>): String {
++        val key = indoorCounterKey(prefix, scope)
++        val next = nextIndoorCode(prefix, used, researchPreferences.getLong(key, 1L))
++        researchPreferences.edit().putLong(key, next.drop(prefix.length).toLong() + 1L).apply()
++        return next
++    }
++
++    private fun indoorCounterKey(prefix: String, scope: List<String>): String {
++        val digest = java.security.MessageDigest.getInstance("SHA-256")
++            .digest(JSONArray(scope).toString().toByteArray())
++            .joinToString("") { "%02x".format(it) }.take(24)
++        return "indoor_next_${prefix}_$digest"
++    }
++
++    private fun reserveIndoorCode(prefix: String, scope: List<String>, value: String) {
++        val number = Regex("${Regex.escape(prefix)}([0-9]+)", RegexOption.IGNORE_CASE)
++            .matchEntire(value)?.groupValues?.get(1)?.toLongOrNull() ?: return
++        if (number < 1L || number == Long.MAX_VALUE) return
++        val key = indoorCounterKey(prefix, scope)
++        if (researchPreferences.getLong(key, 1L) <= number) {
++            researchPreferences.edit().putLong(key, number + 1L).apply()
++        }
++    }
++
++    private fun rememberIndoorLabel(value: IndoorLabel) {
++        val choice = value.normalized()
++        if (choice == IndoorLabel()) return
++        reserveIndoorCode("P", listOf(choice.building, choice.floor), choice.point)
++        reserveIndoorCode("R", listOf(choice.building), choice.route)
++        val choices = (listOf(choice) + indoorLabelChoices).distinct().take(MAX_SAVED_INDOOR_LABELS)
++        indoorLabelChoices.clear()
++        indoorLabelChoices.addAll(choices)
++        researchPreferences.edit().putString(INDOOR_LABEL_CHOICES_PREFERENCE,
++            JSONArray().apply { choices.forEach { put(it.toJson()) } }.toString()).apply()
++    }
++
+     fun markIndoorEvent(label: String) {
+-        if (!isRecording) return
++        if (!isRecording || isRestoring || isExporting) return
++        if (label == "point_arrival" && indoorLabel.point.isBlank()) {
++            statusText = "Select a point before marking arrival"
++            return
++        }
++        if (label == "floor_change_end" && indoorLabel.floor.isBlank()) {
++            statusText = "Select the arrival floor first"
++            return
++        }
++        updateIndoorLabelSelection(indoorLabel.normalized())
+         manualEvents.add(ManualEvent(System.currentTimeMillis(), label.take(160), indoorLabel))
+         appendLog("Checkpoint: $label / ${indoorLabel.floor} / ${indoorLabel.point}")
++        rememberIndoorLabel(indoorLabel)
++        when (label) {
++            "movement_start" -> updateIndoorLabelSelection(indoorLabel.copy(point = ""))
++            "floor_change_start" -> updateIndoorLabelSelection(indoorLabel.copy(floor = "", point = ""))
++        }
+         persistActiveSessionState(force = true)
+     }
+ 
+@@ -680,11 +763,11 @@
+         activeScenarioId = root.optStringOrNull("conditionLabel")
+             ?: root.optStringOrNull("scenarioId")
+             ?: "unspecified"
+-        onCampaignIdChange(activeCampaignId.orEmpty())
+-        scenarioIdInput = activeScenarioId.orEmpty()
++        campaignId = activeCampaignId.orEmpty().ifBlank { loadOrCreateCampaignId() }
++        researchPreferences.edit().putString(CAMPAIGN_ID_PREFERENCE, campaignId).apply()
+         keepScreenOnDuringCapture = root.optBoolean("keepScreenOn", false)
+         initialIndoorLabel = root.optJSONObject("initialIndoorLabel")?.toIndoorLabel()
+-        root.optJSONObject("currentIndoorLabel")?.toIndoorLabel()?.let(::onIndoorLabelChange)
++        root.optJSONObject("currentIndoorLabel")?.toIndoorLabel()?.let(::updateIndoorLabelSelection)
+         manualEvents.clear()
+         val restoredEvents = root.optJSONArray("manualEvents") ?: JSONArray()
+         for (index in 0 until restoredEvents.length()) {
+--- /dev/null
++++ b/app/src/main/java/com/example/locationdata/IndoorLabelChoices.kt
+@@ -0,0 +1,31 @@
++package com.example.locationdata
++
++import org.json.JSONArray
++
++internal const val MAX_SAVED_INDOOR_LABELS = 80
++
++internal fun IndoorLabel.normalized() = IndoorLabel(
++    building.trim().take(80), floor.trim().take(80), point.trim().take(80), route.trim().take(80)
++)
++
++internal fun loadIndoorLabelChoices(serialized: String?, legacy: IndoorLabel): List<IndoorLabel> {
++    val saved = runCatching {
++        val array = JSONArray(serialized ?: "[]")
++        (0 until minOf(array.length(), MAX_SAVED_INDOOR_LABELS)).mapNotNull { index ->
++            array.optJSONObject(index)?.toIndoorLabel()?.normalized()
++        }
++    }.getOrDefault(emptyList())
++    val previous = legacy.normalized()
++    return (saved + previous).filter { it != IndoorLabel() }.distinct().take(MAX_SAVED_INDOOR_LABELS)
++}
++
++internal fun nextIndoorCode(prefix: String, used: List<String>, atLeast: Long = 1): String {
++    val occupied = used.map { it.trim().uppercase() }.toSet()
++    var next = atLeast.coerceAtLeast(1L)
++    while (prefix.uppercase() + next.toString().padStart(2, '0') in occupied) {
++        check(next < Long.MAX_VALUE) { "No automatic label numbers remain" }
++        next++
++    }
++    check(next < Long.MAX_VALUE) { "No automatic label numbers remain" }
++    return prefix + next.toString().padStart(2, '0')
++}
+--- a/app/src/main/java/com/example/locationdata/IndoorMarkers.kt
++++ b/app/src/main/java/com/example/locationdata/IndoorMarkers.kt
+@@ -1,16 +1,26 @@
+ package com.example.locationdata
+ 
++import androidx.compose.foundation.horizontalScroll
++import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.padding
++import androidx.compose.material3.AssistChip
+ import androidx.compose.material3.Card
++import androidx.compose.material3.FilterChip
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedButton
+ import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.unit.dp
+ import org.json.JSONObject
+@@ -46,58 +56,104 @@
+     onLabelChange: (IndoorLabel) -> Unit,
+     onMark: (String) -> Unit,
+     enabled: Boolean,
+-    labelsEditable: Boolean = true
++    labelsEditable: Boolean = true,
++    recentBuildings: List<String> = emptyList(),
++    recentFloors: List<String> = emptyList(),
++    recentPoints: List<String> = emptyList(),
++    recentRoutes: List<String> = emptyList(),
++    onNewPoint: () -> Unit = {},
++    onNewRoute: () -> Unit = {}
+ ) {
++    var showCustomLabels by rememberSaveable { mutableStateOf(false) }
++    var showRoute by rememberSaveable { mutableStateOf(false) }
++    val floorChoices = (recentFloors + listOf("B3", "B2", "B1") + (1..12).map { "${it}F" })
++        .distinct()
+     Card(modifier = Modifier.fillMaxWidth()) {
+         Column(
+             modifier = Modifier.padding(12.dp),
+             verticalArrangement = Arrangement.spacedBy(8.dp)
+         ) {
+-            Text("Indoor checkpoints", style = MaterialTheme.typography.titleMedium)
++            Text("Indoor location", style = MaterialTheme.typography.titleMedium)
+             Text(
+-                "Optional labels entered by you. Floors are not detected automatically.",
++                "Choose where you are now. Start records these labels. During capture, confirm label changes with a checkpoint.",
+                 style = MaterialTheme.typography.bodySmall
+             )
+-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            if (labelsEditable) {
+                 OutlinedTextField(
+                     value = label.building,
+                     onValueChange = { onLabelChange(label.copy(building = it.take(MAX_INDOOR_LABEL_LENGTH))) },
+                     label = { Text("Building") },
+-                    singleLine = true,
+-                    enabled = labelsEditable,
+-                    modifier = Modifier.weight(1f)
+-                )
++                    supportingText = { Text("Enter once, then reuse a recent building.") },
++                    singleLine = true,
++                    modifier = Modifier.fillMaxWidth()
++                )
++            } else {
++                Text("Building: ${label.building.ifBlank { "Not selected" }}")
++            }
++            LabelChoices(recentBuildings, label.building, labelsEditable) {
++                onLabelChange(label.copy(building = it))
++            }
++            Text("Floor: ${label.floor.ifBlank { "Not selected" }}")
++            LabelChoices((listOf(label.floor) + floorChoices), label.floor, labelsEditable) {
++                onLabelChange(label.copy(floor = it))
++            }
++            Row(
++                modifier = Modifier.fillMaxWidth(),
++                horizontalArrangement = Arrangement.SpaceBetween,
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Text("Point: ${label.point.ifBlank { "Not selected" }}", modifier = Modifier.weight(1f))
++                AssistChip(onClick = onNewPoint, label = { Text("New point") }, enabled = labelsEditable)
++            }
++            LabelChoices(listOf(label.point) + recentPoints, label.point, labelsEditable) {
++                onLabelChange(label.copy(point = it))
++            }
++            TextButton(onClick = { showRoute = !showRoute }, enabled = labelsEditable) {
++                Text(if (showRoute) "Hide route" else "Route (optional)${label.route.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
++            }
++            if (showRoute) {
++                Row(
++                    modifier = Modifier.fillMaxWidth(),
++                    horizontalArrangement = Arrangement.SpaceBetween,
++                    verticalAlignment = Alignment.CenterVertically
++                ) {
++                    Text("Route: ${label.route.ifBlank { "Not selected" }}", modifier = Modifier.weight(1f))
++                    AssistChip(onClick = onNewRoute, label = { Text("New route") }, enabled = labelsEditable)
++                }
++                LabelChoices(listOf(label.route) + recentRoutes, label.route, labelsEditable) {
++                    onLabelChange(label.copy(route = it))
++                }
++            }
++            TextButton(onClick = { showCustomLabels = !showCustomLabels }, enabled = labelsEditable) {
++                Text(if (showCustomLabels) "Hide custom labels" else "Custom floor, point or route")
++            }
++            if (showCustomLabels && labelsEditable) {
+                 OutlinedTextField(
+                     value = label.floor,
+                     onValueChange = { onLabelChange(label.copy(floor = it.take(MAX_INDOOR_LABEL_LENGTH))) },
+-                    label = { Text("Floor") },
+-                    singleLine = true,
+-                    enabled = labelsEditable,
+-                    modifier = Modifier.weight(1f)
+-                )
+-            }
+-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                    label = { Text("Custom floor") },
++                    singleLine = true,
++                    modifier = Modifier.fillMaxWidth()
++                )
+                 OutlinedTextField(
+                     value = label.point,
+                     onValueChange = { onLabelChange(label.copy(point = it.take(MAX_INDOOR_LABEL_LENGTH))) },
+-                    label = { Text("Point") },
+-                    singleLine = true,
+-                    enabled = labelsEditable,
+-                    modifier = Modifier.weight(1f)
++                    label = { Text("Custom point") },
++                    singleLine = true,
++                    modifier = Modifier.fillMaxWidth()
+                 )
+                 OutlinedTextField(
+                     value = label.route,
+                     onValueChange = { onLabelChange(label.copy(route = it.take(MAX_INDOOR_LABEL_LENGTH))) },
+-                    label = { Text("Route") },
+-                    singleLine = true,
+-                    enabled = labelsEditable,
+-                    modifier = Modifier.weight(1f)
++                    label = { Text("Custom route (optional)") },
++                    singleLine = true,
++                    modifier = Modifier.fillMaxWidth()
+                 )
+             }
+             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                 OutlinedButton(
+                     onClick = { onMark("point_arrival") },
+-                    enabled = enabled,
++                    enabled = enabled && label.point.isNotBlank(),
+                     modifier = Modifier.weight(1f)
+                 ) { Text("Arrived at point") }
+                 OutlinedButton(
+@@ -114,10 +170,34 @@
+                 ) { Text("Start floor change") }
+                 OutlinedButton(
+                     onClick = { onMark("floor_change_end") },
+-                    enabled = enabled,
++                    enabled = enabled && label.floor.isNotBlank(),
+                     modifier = Modifier.weight(1f)
+                 ) { Text("End floor change") }
+             }
+         }
+     }
+ }
++
++@Composable
++private fun LabelChoices(
++    values: List<String>,
++    selected: String,
++    enabled: Boolean,
++    onSelect: (String) -> Unit
++) {
++    val choices = values.filter(String::isNotBlank).distinct()
++    if (choices.isEmpty()) return
++    Row(
++        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
++        horizontalArrangement = Arrangement.spacedBy(6.dp)
++    ) {
++        choices.forEach { value ->
++            FilterChip(
++                selected = selected == value,
++                onClick = { onSelect(value) },
++                label = { Text(value) },
++                enabled = enabled
++            )
++        }
++    }
++}
+--- a/app/src/main/java/com/example/locationdata/MainActivity.kt
++++ b/app/src/main/java/com/example/locationdata/MainActivity.kt
+@@ -25,6 +25,7 @@
+ import androidx.compose.material3.Switch
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.DisposableEffect
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
+@@ -34,6 +35,7 @@
+ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.tooling.preview.Preview
+ import androidx.compose.ui.Modifier
++import androidx.compose.ui.Alignment
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.core.content.ContextCompat
+@@ -42,6 +44,7 @@
+ import android.os.SystemClock
+ import kotlinx.coroutines.delay
+ import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.rememberSaveable
+ 
+ class MainActivity : ComponentActivity() {
+     private val viewModel get() = (application as GroundTruthApplication).recorder
+@@ -102,16 +105,18 @@
+                 Scaffold { innerPadding ->
+                     GroundTruthScreen(
+                         activeSessionId = viewModel.activeSessionId,
+-                        campaignIdInput = viewModel.campaignIdInput,
+-                        onCampaignIdChange = {
+-                            if (!viewModel.isRecording) viewModel.onCampaignIdChange(it)
++                        keepScreenOn = viewModel.keepScreenOnDuringCapture,
++                        onKeepScreenOnChange = {
++                            if (!viewModel.isRecording && !viewModel.isRestoring && !viewModel.isExporting) {
++                                viewModel.keepScreenOnDuringCapture = it
++                            }
+                         },
+-                        scenarioIdInput = viewModel.scenarioIdInput,
+-                        onScenarioIdChange = { if (!viewModel.isRecording) viewModel.scenarioIdInput = it.take(80) },
+-                        keepScreenOn = viewModel.keepScreenOnDuringCapture,
+-                        onKeepScreenOnChange = { if (!viewModel.isRecording) viewModel.keepScreenOnDuringCapture = it },
+                         manualEventInput = viewModel.manualEventInput,
+-                        onManualEventInputChange = { viewModel.manualEventInput = it },
++                        onManualEventInputChange = {
++                            if (viewModel.isRecording && !viewModel.isRestoring && !viewModel.isExporting) {
++                                viewModel.manualEventInput = it
++                            }
++                        },
+                         onAddManualEvent = viewModel::addManualEvent,
+                         isRecording = viewModel.isRecording,
+                         isRestoring = viewModel.isRestoring,
+@@ -127,6 +132,12 @@
+                         indoorLabel = viewModel.indoorLabel,
+                         onIndoorLabelChange = viewModel::onIndoorLabelChange,
+                         onMarkIndoorEvent = viewModel::markIndoorEvent,
++                        recentBuildings = viewModel.recentBuildings,
++                        recentFloors = viewModel.recentFloors,
++                        recentPoints = viewModel.recentPoints,
++                        recentRoutes = viewModel.recentRoutes,
++                        onNewPoint = viewModel::onNewPoint,
++                        onNewRoute = viewModel::onNewRoute,
+                         hasLocationPermission = hasLocationPermission,
+                         onRequestPermission = {
+                             pendingStartAfterPermission = false
+@@ -203,10 +214,6 @@
+ @Composable
+ private fun GroundTruthScreen(
+     activeSessionId: String?,
+-    campaignIdInput: String,
+-    onCampaignIdChange: (String) -> Unit,
+-    scenarioIdInput: String,
+-    onScenarioIdChange: (String) -> Unit,
+     keepScreenOn: Boolean,
+     onKeepScreenOnChange: (Boolean) -> Unit,
+     manualEventInput: String,
+@@ -226,6 +233,12 @@
+     indoorLabel: IndoorLabel = IndoorLabel(),
+     onIndoorLabelChange: (IndoorLabel) -> Unit = {},
+     onMarkIndoorEvent: (String) -> Unit = {},
++    recentBuildings: List<String> = emptyList(),
++    recentFloors: List<String> = emptyList(),
++    recentPoints: List<String> = emptyList(),
++    recentRoutes: List<String> = emptyList(),
++    onNewPoint: () -> Unit = {},
++    onNewRoute: () -> Unit = {},
+     hasLocationPermission: Boolean,
+     onRequestPermission: () -> Unit,
+     onStartCapture: () -> Unit,
+@@ -233,6 +246,7 @@
+     modifier: Modifier = Modifier
+ ) {
+     val scrollState = rememberScrollState()
++    var showManualEvent by rememberSaveable { mutableStateOf(false) }
+     val primaryCell = latestSample?.radio?.cells?.let(::selectServingCell)?.cell
+     var nowElapsed by remember { mutableStateOf(SystemClock.elapsedRealtimeNanos()) }
+     LaunchedEffect(isRecording) {
+@@ -281,47 +295,39 @@
+             }
+         }
+ 
+-        DataCard("Session setup") {
+-            Text(
+-                "The session ID is generated automatically when capture starts.",
+-                style = MaterialTheme.typography.bodySmall
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.SpaceBetween,
++            verticalAlignment = Alignment.CenterVertically
++        ) {
++            Text("Keep screen on", modifier = Modifier.weight(1f))
++            Switch(
++                checked = keepScreenOn,
++                onCheckedChange = onKeepScreenOnChange,
++                enabled = !isRecording && !isRestoring && !isExporting
+             )
+-            InfoRow("ID format", "yyyyMMdd_HHmmss_SSS")
+-            OutlinedTextField(
+-                value = campaignIdInput,
+-                onValueChange = onCampaignIdChange,
+-                label = { Text("Campaign ID") },
+-                supportingText = {
+-                    Text("Generated once and retained. Verify it matches the caller app.")
+-                },
+-                enabled = !isRecording,
+-                singleLine = true,
+-                modifier = Modifier.fillMaxWidth()
+-            )
+-            OutlinedTextField(
+-                value = scenarioIdInput,
+-                onValueChange = onScenarioIdChange,
+-                label = { Text("Condition label") },
+-                supportingText = { Text("Example: day1_network_a_first") },
+-                enabled = !isRecording,
+-                singleLine = true,
+-                modifier = Modifier.fillMaxWidth()
+-            )
+-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+-                Column(modifier = Modifier.weight(1f)) {
+-                    Text("Keep screen on")
+-                    Text("Disable for realistic screen-off trials", style = MaterialTheme.typography.bodySmall)
+-                }
+-                Switch(checked = keepScreenOn, onCheckedChange = onKeepScreenOnChange, enabled = !isRecording)
+-            }
+-        }
++        }
++
++        IndoorMarkerPanel(
++            label = indoorLabel,
++            onLabelChange = onIndoorLabelChange,
++            onMark = onMarkIndoorEvent,
++            enabled = isRecording && !isRestoring && !isExporting,
++            labelsEditable = !isRestoring && !isExporting,
++            recentBuildings = recentBuildings,
++            recentFloors = recentFloors,
++            recentPoints = recentPoints,
++            recentRoutes = recentRoutes,
++            onNewPoint = onNewPoint,
++            onNewRoute = onNewRoute
++        )
+ 
+         if (!hasLocationPermission) {
+             Text(
+                 text = "Precise location permission not granted",
+                 color = Color(0xFFB00020)
+             )
+-            Button(onClick = onRequestPermission) {
++            Button(onClick = onRequestPermission, enabled = !isRestoring && !isExporting) {
+                 Text("Grant precise location permission")
+             }
+         }
+@@ -352,23 +358,29 @@
+             }
+         }
+ 
+-        IndoorMarkerPanel(
+-            indoorLabel, onIndoorLabelChange, onMarkIndoorEvent, isRecording,
+-            labelsEditable = !isRestoring && !isExporting
+-        )
+-
+         if (isRecording) {
+-            DataCard("Manual event marker") {
+-                OutlinedTextField(
+-                    value = manualEventInput,
+-                    onValueChange = onManualEventInputChange,
+-                    label = { Text("Event label") },
+-                    supportingText = { Text("Example: walking_start, tunnel_enter") },
+-                    singleLine = true,
+-                    modifier = Modifier.fillMaxWidth()
+-                )
+-                Button(onClick = onAddManualEvent, enabled = manualEventInput.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+-                    Text("Mark event now")
++            TextButton(
++                onClick = { showManualEvent = !showManualEvent },
++                enabled = !isRestoring && !isExporting
++            ) {
++                Text(if (showManualEvent) "Hide custom event" else "Custom event (optional)")
++            }
++            if (showManualEvent && !isRestoring && !isExporting) {
++                DataCard("Custom event") {
++                    OutlinedTextField(
++                        value = manualEventInput,
++                        onValueChange = onManualEventInputChange,
++                        label = { Text("Event label") },
++                        singleLine = true,
++                        modifier = Modifier.fillMaxWidth()
++                    )
++                    Button(
++                        onClick = onAddManualEvent,
++                        enabled = manualEventInput.isNotBlank(),
++                        modifier = Modifier.fillMaxWidth()
++                    ) {
++                        Text("Mark event now")
++                    }
+                 }
+             }
+         }
+@@ -485,10 +497,6 @@
+     LocationDataTheme {
+         GroundTruthScreen(
+             activeSessionId = null,
+-            campaignIdInput = "sip-observability-01",
+-            onCampaignIdChange = {},
+-            scenarioIdInput = "day1_network_a_first",
+-            onScenarioIdChange = {},
+             keepScreenOn = false,
+             onKeepScreenOnChange = {},
+             manualEventInput = "walking_start",
+--- a/app/src/test/java/com/example/locationdata/GroundTruthCaptureTest.kt
++++ b/app/src/test/java/com/example/locationdata/GroundTruthCaptureTest.kt
+@@ -64,6 +64,112 @@
+     }
+ 
+     @Test
++    fun startsAndExportsWithoutTypedCampaignOrCondition() {
++        val recorder = startRecorder()
++        val session = requireNotNull(recorder.activeSessionId)
++        assertEquals(session, recorder.activeScenarioId)
++        assertTrue(recorder.activeCampaignId!!.isNotBlank())
++        captureTick(recorder)
++        val root = export(recorder)
++        assertEquals(session, root.getString("conditionLabel"))
++        assertEquals(session, root.getString("scenarioId"))
++        assertTrue(root.getString("campaignId").isNotBlank())
++        assertEquals(1, root.getJSONArray("samples").length())
++    }
++
++    @Test
++    fun rememberedChoicesNeverBecomeCurrentFloorOrPointOnColdStart() {
++        val first = newRecorder()
++        first.onIndoorLabelChange(first.indoorLabel.copy(building = "Test mall"))
++        first.onIndoorLabelChange(first.indoorLabel.copy(floor = "2F"))
++        first.onNewPoint()
++        first.onNewRoute()
++        assertEquals("P01", first.indoorLabel.point)
++        assertTrue(first.startSession())
++        val firstExport = export(first)
++        assertEquals("2F", firstExport.getJSONObject("initialIndoorLabel").getString("floor"))
++        assertEquals("P01", firstExport.getJSONObject("initialIndoorLabel").getString("point"))
++
++        val fresh = newRecorder()
++        assertEquals("Test mall", fresh.indoorLabel.building)
++        assertEquals("", fresh.indoorLabel.floor)
++        assertEquals("", fresh.indoorLabel.point)
++        assertEquals("", fresh.indoorLabel.route)
++        assertTrue(fresh.recentBuildings.contains("Test mall"))
++        assertTrue(fresh.recentFloors.contains("2F"))
++        fresh.onIndoorLabelChange(fresh.indoorLabel.copy(floor = "2F"))
++        assertTrue(fresh.recentPoints.contains("P01"))
++        assertTrue(fresh.recentRoutes.contains("R01"))
++        fresh.onNewPoint()
++        assertEquals("P02", fresh.indoorLabel.point)
++        fresh.onIndoorLabelChange(fresh.indoorLabel.copy(floor = "3F"))
++        assertEquals("", fresh.indoorLabel.point)
++        fresh.onNewPoint()
++        assertEquals("P01", fresh.indoorLabel.point)
++        fresh.onIndoorLabelChange(fresh.indoorLabel.copy(building = "Other mall"))
++        assertEquals("", fresh.indoorLabel.floor)
++        assertEquals("", fresh.indoorLabel.point)
++        assertEquals("", fresh.indoorLabel.route)
++        fresh.onIndoorLabelChange(fresh.indoorLabel.copy(building = " Test mall "))
++        fresh.onIndoorLabelChange(fresh.indoorLabel.copy(floor = " 2F "))
++        fresh.onNewPoint()
++        assertEquals("Test mall", fresh.indoorLabel.building)
++        assertEquals("2F", fresh.indoorLabel.floor)
++        assertEquals("P03", fresh.indoorLabel.point)
++    }
++
++    @Test
++    fun movementAndFloorMarkersPreserveOriginThenClearUnknownPosition() {
++        val recorder = newRecorder()
++        recorder.onIndoorLabelChange(recorder.indoorLabel.copy(building = "Test mall"))
++        recorder.onIndoorLabelChange(recorder.indoorLabel.copy(floor = "2F"))
++        recorder.onNewPoint()
++        assertTrue(recorder.startSession())
++        recorder.markIndoorEvent("movement_start")
++        assertEquals("", recorder.indoorLabel.point)
++        recorder.markIndoorEvent("floor_change_start")
++        assertEquals("", recorder.indoorLabel.floor)
++        recorder.markIndoorEvent("floor_change_end")
++        assertEquals(2, recorder.manualEvents.size)
++        recorder.onIndoorLabelChange(recorder.indoorLabel.copy(floor = "3F"))
++        recorder.markIndoorEvent("floor_change_end")
++        recorder.onNewPoint()
++        recorder.markIndoorEvent("point_arrival")
++
++        val root = export(recorder)
++        val events = root.getJSONArray("manualEvents")
++        assertEquals(4, events.length())
++        assertEquals("2F", root.getJSONObject("initialIndoorLabel").getString("floor"))
++        assertEquals("P01", events.getJSONObject(0).getJSONObject("indoorLabel").getString("point"))
++        assertEquals("2F", events.getJSONObject(1).getJSONObject("indoorLabel").getString("floor"))
++        assertEquals("", events.getJSONObject(1).getJSONObject("indoorLabel").getString("point"))
++        assertEquals("3F", events.getJSONObject(2).getJSONObject("indoorLabel").getString("floor"))
++        assertEquals("3F", events.getJSONObject(3).getJSONObject("indoorLabel").getString("floor"))
++        assertEquals("P01", events.getJSONObject(3).getJSONObject("indoorLabel").getString("point"))
++    }
++
++    @Test
++    fun confirmedCustomCodesAreReservedAfterTheirRecentChoicesAreEvicted() {
++        val first = newRecorder()
++        first.onIndoorLabelChange(first.indoorLabel.copy(building = "Test mall"))
++        first.onIndoorLabelChange(first.indoorLabel.copy(floor = "2F"))
++        first.onIndoorLabelChange(first.indoorLabel.copy(point = "P80", route = "R90"))
++        assertTrue(first.startSession())
++        export(first)
++        // Recent choices are intentionally bounded; numeric reservations must outlive them.
++        application.getSharedPreferences("research_preferences", Context.MODE_PRIVATE).edit()
++            .putString("indoor_label_choices", "[]")
++            .putString("indoor_label", IndoorLabel(building = "Test mall").toJson().toString())
++            .commit()
++        val fresh = newRecorder()
++        fresh.onIndoorLabelChange(fresh.indoorLabel.copy(floor = "2F"))
++        fresh.onNewPoint()
++        fresh.onNewRoute()
++        assertEquals("P81", fresh.indoorLabel.point)
++        assertEquals("R91", fresh.indoorLabel.route)
++    }
++
++    @Test
+     fun timerCapturesAndExportsRowsEvenWhenNoLocationFixArrives() {
+         val recorder = startRecorder()
+ 
+@@ -185,6 +291,11 @@
+                 metadata.optBoolean("capturePaused") && metadata.optInt("sampleCount") == 2
+             }.getOrDefault(false)
+         }
++        val legacyMetadata = JSONObject(metadataFile.readText())
++            .put("campaignId", "legacy_campaign")
++            .put("conditionLabel", "legacy_condition")
++            .put("scenarioId", "legacy_condition")
++        metadataFile.writeText(legacyMetadata.toString())
+         val restored = newRecorder()
+         await("session restoration did not complete") { !restored.isRestoring }
+ 
+@@ -199,6 +310,9 @@
+ 
+         val root = export(restored)
+         assertEquals(sessionId, root.getString("sessionId"))
++        assertEquals("legacy_campaign", root.getString("campaignId"))
++        assertEquals("legacy_condition", root.getString("conditionLabel"))
++        assertEquals("legacy_condition", root.getString("scenarioId"))
+         val samples = root.getJSONArray("samples")
+         assertEquals(2, samples.length())
+         for (index in 0 until samples.length()) {
+@@ -225,8 +339,6 @@
+     }
+ 
+     private fun startRecorder(): GroundTruthViewModel = newRecorder().apply {
+-        campaignIdInput = "indoor_test"
+-        scenarioIdInput = "known_floor"
+         assertTrue("recorder should start", startSession())
+     }
+ 

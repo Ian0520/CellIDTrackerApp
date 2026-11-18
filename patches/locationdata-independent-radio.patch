@@ -1,0 +1,2003 @@
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ LocationData records target-device ground truth for experiments that compare cellular/physical context with probe latency. The probe latency is measured by the separate probing app from INVITE transmission to receipt of a provisional SIP response.
+ 
+-The app exports one JSON file per capture session. The current export schema is **version 6**.
++The app exports one JSON file per capture session. The current export schema is **version 7**.
+ 
+ ## Capture Behavior
+ 
+@@ -10,12 +10,18 @@
+ - A campaign ID is generated as `sipobs_YYYYMMDD` on first use and retained across blocks, app restarts, and later days until edited.
+ - The session ID is also used as the JSON filename.
+ - Fused high-accuracy location is requested approximately once per second.
+-- Each location result produces one ground-truth sample and one radio/environment snapshot.
++- The foreground service requests one radio/environment sample per second independently of fused location callbacks. Indoor location silence does not stop Cell recording.
++- Timing is best effort: sleeping devices, modem caches and OS scheduling can change the actual cadence. Use recorded timestamps and cell measurement ages; a timer tick is not a guaranteed fresh modem measurement.
++- A tick with no location fix is retained with explicit null location fields and `locationStatus=missing`. Reused fixes retain their original timestamps and increasing age; fixes over 10 seconds old are labeled `stale` and do not supply the current speed class.
++- Only one background telemetry read is allowed at a time; overlapping ticks are skipped rather than queued. An unfinished tick at Stop/export is discarded.
++- One application-owned recorder is shared by the foreground service and recreated activities. The service owns location/activity subscriptions and the radio clock. Closing the activity does not create another recorder or ticker.
++- Precise location permission is required for cellular collection. Read failures, missing registered cells, ambiguous selection, old local measurements, and a recording gap over five seconds are visible in the UI.
++- The service is not silently restarted by Android after process termination. Opening the app restores the saved session; a session explicitly paused by a service/storage error stays paused and can be exported.
+ - Capture uses a foreground location service. Keeping the screen on is an optional recorded session setting.
+ - Each unfinished-session sample is immediately appended to a private newline-delimited JSON journal.
+ - Only the latest sample and total count are retained in UI memory, so memory usage does not grow with session length.
+ - Small active-session metadata is atomically replaced at most once every 10 seconds; the full sample history is never rewritten during capture.
+-- Restore, legacy-session migration, and final export run away from the UI thread. Export streams the journal into the schema-5 JSON structure.
++- Restore, legacy-session migration, and final export run away from the UI thread. Export streams the journal into the schema-7 JSON structure.
+ - A malformed final journal line after an interrupted write is skipped while earlier complete samples remain recoverable.
+ - Capture stops with a storage error rather than continuing when less than 64 MB of app storage remains or the storage writer falls more than 120 operations behind.
+ - Event logs are limited to 100 entries, 16 KB total, and 600 characters per entry. Only the newest 30 entries are rendered.
+@@ -39,7 +45,7 @@
+ 
+ | Field | Type | Meaning |
+ |---|---|---|
+-| `schemaVersion` | integer | Export schema version, currently `6`. |
++| `schemaVersion` | integer | Export schema version, currently `7`. |
+ | `appType` | string | Always `ground_truth`. |
+ | `sessionId` | string | Date/time-based session identifier. |
+ | `campaignId` | string | Shared identifier entered on both phones for every block in one campaign. |
+@@ -54,7 +60,8 @@
+ | `device` | object | Device and Android metadata. |
+ | `samples` | array | Ordered ground-truth samples. |
+ | `captureConfig` | object | Requested intervals, debounce threshold, and screen policy. |
+-| `manualEvents` | array | User-marked `{timestampMillis, label}` phase changes during capture. |
++| `initialIndoorLabel` | object/null | Optional user-entered building, floor, point and route at session start. |
++| `manualEvents` | array | User-marked `{timestampMillis, label, indoorLabel}` checkpoints during capture. |
+ 
+ ### Device Metadata
+ 
+@@ -72,10 +79,14 @@
+ | Field | Type | Meaning |
+ |---|---|---|
+ | `recordedAtMillis` | integer | Sample wall-clock time as Unix epoch milliseconds. Use this to join with probe data from another phone. |
+-| `elapsedRealtimeNanos` | integer | Monotonic time since this phone booted. Valid only for intervals on this device. |
+-| `lat`, `lon` | number | Fused latitude and longitude in degrees. |
+-| `accuracyM` | number | Estimated horizontal accuracy radius in metres. |
+-| `provider` | string | Provider attached to the fused location result. |
++| `sampleSchemaVersion` | integer | `7` on new samples; absent on older rows restored from earlier versions. |
++| `capturedElapsedRealtimeNanos` | integer/null | Sampling tick time since this phone booted; null/absent for legacy rows. Use this for within-device sampling intervals. |
++| `elapsedRealtimeNanos`, `locationElapsedRealtimeNanos` | integer/null | Location FIX monotonic timestamp (the former name is retained for compatibility). These are not the sampling clock. |
++| `locationFixTimeMillis` | integer/null | Original location fix wall-clock time, not the recording time. |
++| `locationStatus` | string | `missing`, `available`, or `stale` (>10 s); `legacy` for older rows without an explicit status. |
++| `lat`, `lon` | number/null | Fused latitude and longitude in degrees. |
++| `accuracyM` | number/null | Estimated horizontal accuracy radius in metres. |
++| `provider` | string/null | Provider attached to the fused location result. |
+ | `speedMps` | number/null | Reported speed in metres per second. |
+ | `speedAccuracyMps` | number/null | Estimated speed uncertainty. |
+ | `altitudeM` | number/null | Altitude when available. |
+@@ -83,7 +94,7 @@
+ | `bearingDeg` | number/null | Direction of travel in degrees. |
+ | `bearingAccuracyDeg` | number/null | Estimated bearing uncertainty. |
+ | `locationAgeMillis` | integer/null | Age of the location result when recorded. |
+-| `isMockLocation` | boolean | Whether Android identifies the location as mocked. |
++| `isMockLocation` | boolean/null | Whether Android identifies the location as mocked. |
+ 
+ ### Movement
+ 
+@@ -106,11 +117,16 @@
+ 
+ ### Serving-Cell Compatibility Fields
+ 
+-These flat fields make the primary serving cell easy to analyze and preserve compatibility with schema 2. Complete cell data is under `radio.cells`.
+-
+-| Field | Type | Meaning |
+-|---|---|---|
+-| `servingCellObservedKey` | string/null | Cell key observed in the current sample. |
++These flat fields expose a selected registered cell. Selection requires a unique registered PRIMARY_SERVING cell, or otherwise a unique registered cell. Multiple unresolved candidates remain unknown. Complete raw cells stay under `radio.cells`.
++
++For caller-compatible models use `servingCellCallerKey` and raw observations over time. The historical `servingCellStableKey` is debounced and can retain the prior value when a current observation is missing; it must not be treated as a new observation.
++
++| Field | Type | Meaning |
++|---|---|---|
++| `servingCellObservedKey` | string/null | Raw selected registered-cell key in the current sample; no neighbor fallback. |
++| `servingCellCallerKey` | string/null | Complete RAT/MCC/MNC/area/Cell ID tuple without PCI, suitable for caller-compatible analysis; null if incomplete. |
++| `servingCellSelectionStatus` | string | `selected_primary`, `selected_registered`, `no_registered`, `ambiguous_registered`, or `legacy`. |
++| `registeredCellCount` | integer | Number of registered cells returned; -1 when unknown in legacy data. |
+ | `servingCellStableKey` | string/null | Cell key accepted after debouncing. |
+ | `servingCellRat` | string/null | RAT such as LTE, NR, WCDMA or GSM. |
+ | `servingCellMcc`, `servingCellMnc` | integer/null | Mobile country and network codes. |
+@@ -151,6 +167,9 @@
+ | Field | Type | Meaning |
+ |---|---|---|
+ | `capturedAtMillis` | integer | Unix epoch time at which the radio snapshot was requested. |
++| `capturedElapsedRealtimeNanos` | integer/null | Radio read monotonic start time; null in old snapshots. |
++| `readStatus` | string | `ok`, `empty`, `permission_denied`, `error`, `unavailable`, or `unknown` for legacy snapshots. |
++| `readErrorReason` | string/null | Fixed diagnostic or exception class; exception messages are not saved. |
+ | `cells` | array | All cells returned by Android, including registered and neighboring cells. |
+ | `dataState` | integer/null | Android telephony data-connection state constant. |
+ | `dataActivity` | integer/null | Android data-activity constant. |
+@@ -252,3 +271,13 @@
+ - Notifications: foreground-capture notification on recent Android versions.
+ 
+ If optional telephony or activity permissions are denied, location capture continues but the corresponding fields may be null or empty.
++
++
++## Indoor checkpoint workflow (schema 7)
++
++1. Before Start, optionally enter building, known floor, point and route; verify retained labels from the previous session.
++2. Start recording. Use **Arrived at point**, **Start moving**, **Start floor change**, and **End floor change** at the relevant checkpoints. Update the floor/point before marking arrival.
++3. Each event saves the label values at that instant. Later field edits do not rewrite earlier events. Blank labels remain unspecified; the app does not infer floor truth from altitude or assign each intervening sample automatically.
++4. Stop & export. Preserve null-location rows for radio/sequence analysis; use the known checkpoints for indoor truth.
++
++Schema 7 is a breaking change for consumers that assume all rows have location coordinates or use `elapsedRealtimeNanos` as the sampling time. Use `recordedAtMillis` for cross-phone alignment and `capturedElapsedRealtimeNanos` for same-phone cadence. A recovered unfinished journal can contain legacy rows and new schema-7 rows; absent new fields must stay unknown rather than being synthesized. Cell age limits here describe the Android local API and do not change the caller-CNI freshness assumption.
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -37,6 +37,9 @@
+     buildFeatures {
+         compose = true
+     }
++    testOptions {
++        unitTests.isIncludeAndroidResources = true
++    }
+ }
+ 
+ dependencies {
+@@ -52,6 +55,8 @@
+     implementation(libs.androidx.compose.material3)
+     implementation(libs.play.services.location)
+     testImplementation(libs.junit)
++    testImplementation("androidx.test:core:1.6.1")
++    testImplementation("org.robolectric:robolectric:4.14.1")
+     androidTestImplementation(libs.androidx.junit)
+     androidTestImplementation(libs.androidx.espresso.core)
+     androidTestImplementation(platform(libs.androidx.compose.bom))
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -13,6 +13,7 @@
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+ 
+     <application
++        android:name=".GroundTruthApplication"
+         android:allowBackup="true"
+         android:dataExtractionRules="@xml/data_extraction_rules"
+         android:fullBackupContent="@xml/backup_rules"
+--- /dev/null
++++ b/app/src/main/java/com/example/locationdata/GroundTruthApplication.kt
+@@ -0,0 +1,17 @@
++package com.example.locationdata
++
++import android.app.Application
++import androidx.lifecycle.ViewModelProvider
++import androidx.lifecycle.ViewModelStore
++import androidx.lifecycle.ViewModelStoreOwner
++
++/** One recorder per process, shared by the service and any recreated activity. */
++class GroundTruthApplication : Application(), ViewModelStoreOwner {
++    override val viewModelStore = ViewModelStore()
++
++    val recorder: GroundTruthViewModel by lazy {
++        ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(this))[
++            GroundTruthViewModel::class.java
++        ]
++    }
++}
+--- a/app/src/main/java/com/example/locationdata/GroundTruthForegroundService.kt
++++ b/app/src/main/java/com/example/locationdata/GroundTruthForegroundService.kt
+@@ -1,24 +1,135 @@
+ package com.example.locationdata
+ 
++import android.Manifest
++import android.annotation.SuppressLint
+ import android.app.NotificationChannel
+ import android.app.NotificationManager
+ import android.app.PendingIntent
+ import android.app.Service
+ import android.content.Context
+ import android.content.Intent
++import android.content.pm.PackageManager
+ import android.content.pm.ServiceInfo
+ import android.os.Build
++import android.os.Handler
+ import android.os.IBinder
++import android.os.Looper
+ import androidx.core.app.NotificationCompat
+ import androidx.core.content.ContextCompat
++import com.google.android.gms.location.ActivityRecognition
++import com.google.android.gms.location.LocationCallback
++import com.google.android.gms.location.LocationRequest
++import com.google.android.gms.location.LocationResult
++import com.google.android.gms.location.LocationServices
++import com.google.android.gms.location.Priority
+ 
++/** Owns the clock and sensor subscriptions; the activity only observes the shared recorder. */
+ class GroundTruthForegroundService : Service() {
++    private val recorder get() = (application as GroundTruthApplication).recorder
++    private val handler = Handler(Looper.getMainLooper())
++    private val fusedLocationClient by lazy { LocationServices.getFusedLocationProviderClient(this) }
++    private var sampling = false
++    private var ownedSessionId: String? = null
++    private var locationRequested = false
++    private val activityPendingIntent by lazy {
++        PendingIntent.getBroadcast(
++            this, 4102, Intent(this, ActivityRecognitionReceiver::class.java),
++            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
++        )
++    }
++    private val locationCallback = object : LocationCallback() {
++        override fun onLocationResult(result: LocationResult) {
++            if (sampling && ownedSessionId == recorder.activeSessionId) {
++                result.locations.forEach(recorder::onLocation)
++            }
++        }
++    }
++    private val tick = object : Runnable {
++        override fun run() {
++            if (!sampling) return
++            if (!recorder.isRecording && !recorder.isExporting) {
++                stopSelf()
++                return
++            }
++            if (recorder.isRecording) recorder.captureSample()
++            handler.postDelayed(this, RADIO_SAMPLE_INTERVAL_MS)
++        }
++    }
++    private val awaitRestore = object : Runnable {
++        override fun run() {
++            when {
++                recorder.isRestoring -> handler.postDelayed(this, 100L)
++                recorder.isExporting -> handler.postDelayed(this, 100L)
++                !recorder.isRecording -> stopSelf()
++                !sampling || ownedSessionId != recorder.activeSessionId -> {
++                    handler.removeCallbacks(tick)
++                    if (locationRequested) runCatching { fusedLocationClient.removeLocationUpdates(locationCallback) }
++                    locationRequested = false
++                    ownedSessionId = recorder.activeSessionId
++                    sampling = true
++                    startLocationUpdates()
++                    startActivityRecognition()
++                    handler.post(tick)
++                }
++            }
++        }
++    }
++
+     override fun onBind(intent: Intent?): IBinder? = null
+ 
+     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+-        val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
+-        startInForeground(sessionId)
+-        return START_STICKY
++        try {
++            startInForeground(recorder.activeSessionId)
++            handler.removeCallbacks(awaitRestore)
++            handler.post(awaitRestore)
++        } catch (error: Exception) {
++            recorder.onCaptureServiceStopped("cannot start capture service (${error.javaClass.simpleName})")
++            stopSelf()
++        }
++        // Recovery is explicit when the app is reopened; do not silently restart a killed experiment.
++        return START_NOT_STICKY
++    }
++
++    @SuppressLint("MissingPermission")
++    private fun startLocationUpdates() {
++        if (locationRequested) return
++        val requestedSessionId = ownedSessionId
++        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1_000L)
++            .setMinUpdateIntervalMillis(1_000L)
++            .build()
++        try {
++            locationRequested = true
++            fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
++                .addOnFailureListener { error ->
++                    if (sampling && requestedSessionId == recorder.activeSessionId) {
++                        locationRequested = false
++                        recorder.onLocationSamplingFailed(error.javaClass.simpleName)
++                    }
++                }
++        } catch (error: Exception) {
++            locationRequested = false
++            recorder.onLocationSamplingFailed(error.javaClass.simpleName)
++        }
++    }
++
++    @SuppressLint("MissingPermission")
++    private fun startActivityRecognition() {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && ContextCompat.checkSelfPermission(
++                this, Manifest.permission.ACTIVITY_RECOGNITION
++            ) != PackageManager.PERMISSION_GRANTED
++        ) return
++        runCatching {
++            ActivityRecognition.getClient(this).requestActivityUpdates(2_000L, activityPendingIntent)
++        }
++    }
++
++    override fun onDestroy() {
++        sampling = false
++        handler.removeCallbacksAndMessages(null)
++        if (locationRequested) runCatching { fusedLocationClient.removeLocationUpdates(locationCallback) }
++        runCatching { ActivityRecognition.getClient(this).removeActivityUpdates(activityPendingIntent) }
++        recorder.onCaptureServiceStopped("capture service stopped; saved data retained", ownedSessionId)
++        super.onDestroy()
+     }
+ 
+     private fun startInForeground(sessionId: String?) {
+@@ -27,61 +138,41 @@
+             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+         }
+         val pendingIntent = PendingIntent.getActivity(
+-            this,
+-            0,
+-            launchIntent,
+-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
++            this, 0, launchIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+         )
+-        val text = sessionId?.let { "Recording session: $it" } ?: "Recording in background"
+-
+         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+             .setContentTitle("Ground-truth capture active")
+-            .setContentText(text)
++            .setContentText(sessionId?.let { "Recording session: $it" } ?: "Restoring capture")
+             .setSmallIcon(R.mipmap.ic_launcher)
+             .setOngoing(true)
+             .setPriority(NotificationCompat.PRIORITY_LOW)
+             .setContentIntent(pendingIntent)
+             .build()
+-
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+-            startForeground(
+-                NOTIFICATION_ID,
+-                notification,
+-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+-            )
+-        } else {
+-            startForeground(NOTIFICATION_ID, notification)
+-        }
++            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
++        } else startForeground(NOTIFICATION_ID, notification)
+     }
+ 
+     private fun ensureChannel() {
+         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+         val manager = getSystemService(NotificationManager::class.java)
+-        val existing = manager.getNotificationChannel(CHANNEL_ID)
+-        if (existing != null) return
+-
+-        val channel = NotificationChannel(
+-            CHANNEL_ID,
+-            "Ground Truth Capture",
+-            NotificationManager.IMPORTANCE_LOW
++        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
++        manager.createNotificationChannel(NotificationChannel(
++            CHANNEL_ID, "Ground Truth Capture", NotificationManager.IMPORTANCE_LOW
+         ).apply {
+-            description = "Keeps location capture running in background"
++            description = "Records cell measurements independently of location updates"
+             setShowBadge(false)
+-        }
+-        manager.createNotificationChannel(channel)
++        })
+     }
+ 
+     companion object {
+-        private const val ACTION_START = "com.example.locationdata.action.START_FG_CAPTURE"
+         private const val EXTRA_SESSION_ID = "extra_session_id"
+         private const val CHANNEL_ID = "ground_truth_capture"
+         private const val NOTIFICATION_ID = 24001
+ 
+         fun start(context: Context, sessionId: String?) {
+-            val intent = Intent(context, GroundTruthForegroundService::class.java).apply {
+-                action = ACTION_START
+-                putExtra(EXTRA_SESSION_ID, sessionId)
+-            }
++            val intent = Intent(context, GroundTruthForegroundService::class.java)
++                .putExtra(EXTRA_SESSION_ID, sessionId)
+             ContextCompat.startForegroundService(context, intent)
+         }
+ 
+--- a/app/src/main/java/com/example/locationdata/GroundTruthViewModel.kt
++++ b/app/src/main/java/com/example/locationdata/GroundTruthViewModel.kt
+@@ -6,6 +6,7 @@
+ import android.os.Build
+ import android.os.Handler
+ import android.os.Looper
++import android.os.SystemClock
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableIntStateOf
+ import androidx.compose.runtime.mutableStateListOf
+@@ -23,7 +24,9 @@
+ import org.json.JSONArray
+ import org.json.JSONObject
+ 
+-private const val SCHEMA_VERSION = 6
++private const val SCHEMA_VERSION = 7
++internal const val RADIO_SAMPLE_INTERVAL_MS = 1_000L
++internal const val LOCATION_STALE_AFTER_MS = 10_000L
+ private const val MOVEMENT_SOURCE_AUTO = "auto"
+ private const val CELL_CHANGE_DEBOUNCE_SAMPLES = 2
+ private const val ACTIVE_STATE_PERSIST_INTERVAL_MS = 10_000L
+@@ -48,15 +51,18 @@
+     }
+ }
+ 
+-data class ManualEvent(val timestampMillis: Long, val label: String)
++data class ManualEvent(val timestampMillis: Long, val label: String, val indoorLabel: IndoorLabel? = null)
+ 
+ data class TruthSample(
+     val recordedAtMillis: Long,
+-    val elapsedRealtimeNanos: Long,
+-    val lat: Double,
+-    val lon: Double,
+-    val accuracyM: Double,
+-    val provider: String,
++    val elapsedRealtimeNanos: Long?, // Legacy alias of the location fix time, never the sampling tick.
++    val capturedElapsedRealtimeNanos: Long?,
++    val locationFixTimeMillis: Long?,
++    val locationStatus: String,
++    val lat: Double?,
++    val lon: Double?,
++    val accuracyM: Double?,
++    val provider: String?,
+     val speedMps: Double?,
+     val speedAccuracyMps: Double?,
+     val altitudeM: Double?,
+@@ -64,7 +70,10 @@
+     val bearingDeg: Double?,
+     val bearingAccuracyDeg: Double?,
+     val locationAgeMillis: Long?,
+-    val isMockLocation: Boolean,
++    val isMockLocation: Boolean?,
++    val servingCellSelectionStatus: String,
++    val registeredCellCount: Int,
++    val servingCellCallerKey: String?,
+     val servingCellObservedKey: String?,
+     val servingCellStableKey: String?,
+     val servingCellRat: String?,
+@@ -126,6 +135,22 @@
+         LinkedBlockingQueue()
+     )
+     private val mainHandler = Handler(Looper.getMainLooper())
++    private val samplingExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
++    var captureStartedElapsedRealtimeNanos by mutableStateOf<Long?>(null)
++        private set
++    var indoorLabel by mutableStateOf(
++        runCatching { JSONObject(researchPreferences.getString("indoor_label", "{}")!!).toIndoorLabel() }
++            .getOrDefault(IndoorLabel())
++    )
++        private set
++    private var initialIndoorLabel: IndoorLabel? = null
++    private var samplingInFlight = false
++    private var captureEpoch = 0L
++    private var latestLocation: Location? = null
++    var locationSamplingError by mutableStateOf<String?>(null)
++        private set
++    var radioSamplingError by mutableStateOf<String?>(null)
++        private set
+ 
+     var activeSessionId by mutableStateOf<String?>(null)
+         private set
+@@ -202,8 +227,14 @@
+         activeCampaignId = campaignId
+         activeScenarioId = conditionLabel
+         startedAtMillis = now
++        captureEpoch += 1
++        captureStartedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
++        initialIndoorLabel = indoorLabel
+         isRecording = true
+         latestSample = null
++        latestLocation = null
++        locationSamplingError = null
++        radioSamplingError = null
+         lastExportPath = null
+         sampleCount = 0
+         manualEvents.clear()
+@@ -217,26 +248,73 @@
+ 
+     fun onLocation(location: Location) {
+         if (!isRecording || activeSessionId == null) return
+-
+-        val recordedAtMillis = System.currentTimeMillis()
+-        val speedMps = if (location.hasSpeed()) location.speed.toDouble() else null
+-        val speedAccuracyMps =
+-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasSpeedAccuracy()) {
+-                location.speedAccuracyMetersPerSecond.toDouble()
+-            } else {
+-                null
++        // A batched/out-of-order fix must not replace a newer fix.
++        if (latestLocation == null || location.elapsedRealtimeNanos >= latestLocation!!.elapsedRealtimeNanos) {
++            latestLocation = Location(location)
++            locationSamplingError = null
++        }
++    }
++
++    /** Called by the foreground service clock, independently of location callbacks. */
++    fun captureSample() {
++        val sessionId = activeSessionId ?: return
++        if (!isRecording || samplingInFlight) return
++        val journal = activeJournalFileName ?: return
++        val epoch = captureEpoch
++        val recordedAt = System.currentTimeMillis()
++        val capturedElapsed = SystemClock.elapsedRealtimeNanos()
++        val location = latestLocation?.let(::Location)
++        samplingInFlight = true
++        samplingExecutor.execute {
++            val result = runCatching {
++                telemetryCollector.captureRadio(recordedAt) to telemetryCollector.captureDeviceContext(sessionId)
+             }
+-        val altitudeM = if (location.hasAltitude()) location.altitude else null
+-        val verticalAccuracyM = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasVerticalAccuracy()) {
++            mainHandler.post {
++                samplingInFlight = false
++                // An in-flight tick is discarded if Stop/export has already frozen this session.
++                if (!isRecording || activeSessionId != sessionId || activeJournalFileName != journal || captureEpoch != epoch) return@post
++                result.onSuccess { (radio, context) ->
++                    radioSamplingError = null
++                    appendSample(recordedAt, capturedElapsed, location, radio, context)
++                }.onFailure { error ->
++                    radioSamplingError = error.javaClass.simpleName
++                    statusText = "Recording warning: sample read failed"
++                    appendLog("Sample read failed: ${error.javaClass.simpleName}")
++                }
++            }
++        }
++    }
++
++    private fun appendSample(
++        recordedAtMillis: Long,
++        capturedElapsedRealtimeNanos: Long,
++        location: Location?,
++        radio: RadioSnapshot,
++        context: DeviceContextSnapshot
++    ) {
++        val locationAge = location?.let {
++            ((capturedElapsedRealtimeNanos - it.elapsedRealtimeNanos) / 1_000_000L).coerceAtLeast(0L)
++        }
++        val locationStatus = when {
++            location == null -> "missing"
++            locationAge != null && locationAge > LOCATION_STALE_AFTER_MS -> "stale"
++            else -> "available"
++        }
++        val speedMps = location?.takeIf { it.hasSpeed() }?.speed?.toDouble()
++        val speedAccuracyMps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location?.hasSpeedAccuracy() == true) {
++            location.speedAccuracyMetersPerSecond.toDouble()
++        } else null
++        val altitudeM = location?.takeIf { it.hasAltitude() }?.altitude
++        val verticalAccuracyM = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location?.hasVerticalAccuracy() == true) {
+             location.verticalAccuracyMeters.toDouble()
+         } else null
+-        val bearingDeg = if (location.hasBearing()) location.bearing.toDouble() else null
+-        val bearingAccuracyDeg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasBearingAccuracy()) {
++        val bearingDeg = location?.takeIf { it.hasBearing() }?.bearing?.toDouble()
++        val bearingAccuracyDeg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location?.hasBearingAccuracy() == true) {
+             location.bearingAccuracyDegrees.toDouble()
+         } else null
+-        val movementClass = classifyMovement(speedMps)
+-        val radio = telemetryCollector.captureRadio(recordedAtMillis)
+-        val primaryCell = radio?.cells?.firstOrNull { it.registered } ?: radio?.cells?.firstOrNull()
++        val movementClass = if (locationStatus == "available") classifyMovement(speedMps) else MovementClass.UNKNOWN
++        val selection = selectServingCell(radio.cells)
++        val primaryCell = selection.cell
+         val servingCellSnapshot = primaryCell?.toServingCellSnapshot()
+         val previousStableKey = stableServingCellKey
+         val servingCellLabel = updateServingCellTracker(
+@@ -246,20 +324,27 @@
+ 
+         val sample = TruthSample(
+             recordedAtMillis = recordedAtMillis,
+-            elapsedRealtimeNanos = location.elapsedRealtimeNanos,
+-            lat = location.latitude,
+-            lon = location.longitude,
+-            accuracyM = location.accuracy.toDouble(),
+-            provider = location.provider ?: "unknown",
++            elapsedRealtimeNanos = location?.elapsedRealtimeNanos,
++            capturedElapsedRealtimeNanos = capturedElapsedRealtimeNanos,
++            locationFixTimeMillis = location?.time,
++            locationStatus = locationStatus,
++            lat = location?.latitude,
++            lon = location?.longitude,
++            accuracyM = location?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
++            provider = location?.provider,
+             speedMps = speedMps,
+             speedAccuracyMps = speedAccuracyMps,
+             altitudeM = altitudeM,
+             verticalAccuracyM = verticalAccuracyM,
+             bearingDeg = bearingDeg,
+             bearingAccuracyDeg = bearingAccuracyDeg,
+-            locationAgeMillis = ((android.os.SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000L)
+-                .coerceAtLeast(0L),
+-            isMockLocation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) location.isMock else location.isFromMockProvider,
++            locationAgeMillis = locationAge,
++            isMockLocation = location?.let {
++                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) it.isMock else it.isFromMockProvider
++            },
++            servingCellSelectionStatus = selection.status,
++            registeredCellCount = selection.registeredCellCount,
++            servingCellCallerKey = primaryCell?.callerCompatibleKey(),
+             servingCellObservedKey = servingCellSnapshot?.observedKey,
+             servingCellStableKey = servingCellLabel.stableKey,
+             servingCellRat = servingCellSnapshot?.rat,
+@@ -285,7 +370,7 @@
+             movementClass = movementClass,
+             movementSource = MOVEMENT_SOURCE_AUTO,
+             radio = radio,
+-            deviceContext = telemetryCollector.captureDeviceContext(activeSessionId ?: "no-session")
++            deviceContext = context
+         )
+         val journalFileName = activeJournalFileName ?: return
+         val sampleJson = sample.toJson()
+@@ -300,19 +385,44 @@
+     }
+ 
+     fun onLocationSamplingFailed(message: String) {
+-        statusText = "Location sampling failed"
++        locationSamplingError = message.take(160)
++        if (isRecording) statusText = "Recording Cell data; location update unavailable"
++        else statusText = "Location sampling failed"
+         appendLog("Location sampling failed: $message")
++    }
++
++    fun onCaptureServiceStopped(message: String, expectedSessionId: String? = activeSessionId) {
++        if (!isRecording || expectedSessionId != activeSessionId) return
++        captureEpoch += 1
++        isRecording = false
++        statusText = "Recording paused: $message"
++        appendLog(statusText)
++        val journal = activeJournalFileName ?: return
++        val metadata = buildActiveMetadata()
++        enqueuePersistence(journal) {
++            runCatching { sessionStore.writeActiveMetadata(metadata) }
++                .onFailure { reportStorageFailure(journal, it) }
++        }
++    }
++
++    fun onIndoorLabelChange(value: IndoorLabel) {
++        indoorLabel = value
++        researchPreferences.edit().putString("indoor_label", value.toJson().toString()).apply()
++    }
++
++    fun markIndoorEvent(label: String) {
++        if (!isRecording) return
++        manualEvents.add(ManualEvent(System.currentTimeMillis(), label.take(160), indoorLabel))
++        appendLog("Checkpoint: $label / ${indoorLabel.floor} / ${indoorLabel.point}")
++        persistActiveSessionState(force = true)
+     }
+ 
+     fun addManualEvent() {
+         if (!isRecording) return
+-        val label = manualEventInput.trim()
++        val label = manualEventInput.trim().take(160)
+         if (label.isBlank()) return
+-        val event = ManualEvent(System.currentTimeMillis(), label)
+-        manualEvents.add(event)
++        markIndoorEvent(label)
+         manualEventInput = ""
+-        appendLog("Manual event: $label")
+-        persistActiveSessionState(force = true)
+     }
+ 
+     fun stopSessionAndExport(onComplete: (Result<File>) -> Unit) {
+@@ -330,7 +440,8 @@
+         }
+ 
+         val endedAt = System.currentTimeMillis()
+-        val metadata = buildActiveMetadata()
++        val wasRecording = isRecording
++        val metadata = buildActiveMetadata().put("capturePaused", true)
+         val exportRoot = buildExportRootWithoutSamples(
+             sessionId = sessionId,
+             startedAtMillis = startedAt,
+@@ -341,6 +452,7 @@
+         val exportDir = File(appContext.getExternalFilesDir(null), "ground_truth_sessions")
+         val outputFile = File(exportDir, "$sessionId.json")
+ 
++        captureEpoch += 1
+         isRecording = false
+         isExporting = true
+         statusText = "Stopping and exporting..."
+@@ -370,8 +482,9 @@
+                     latestSample = null
+                     onComplete(Result.success(exported.file))
+                 }.onFailure { error ->
+-                    isRecording = true
+-                    statusText = "Stop/export failed; capture can resume"
++                    isRecording = wasRecording && !storageFailureReported
++                    if (isRecording) persistActiveSessionState(force = true)
++                    statusText = "Stop/export failed; saved data retained"
+                     appendLog("Stop/export failed: ${error.message ?: error}")
+                     onComplete(Result.failure(error))
+                 }
+@@ -403,15 +516,22 @@
+             .put("packageName", appContext.packageName)
+             .put("appVersionName", versionName)
+             .put("appVersionCode", versionCode)
++            .put("initialIndoorLabel", initialIndoorLabel?.toJson() ?: JSONObject.NULL)
+             .put("captureConfig", JSONObject()
+                 .put("locationIntervalMs", 1000)
+                 .put("locationMinIntervalMs", 1000)
+-                .put("radioSampling", "once_per_location_sample")
++                .put("radioSampling", "independent_service_timer")
++                .put("radioIntervalMs", RADIO_SAMPLE_INTERVAL_MS)
++                .put("locationStaleAfterMs", LOCATION_STALE_AFTER_MS)
++                .put("cellAgeWarningAfterMs", LOCATION_STALE_AFTER_MS)
++                .put("servingCellSelection", "unique_primary_else_unique_registered")
++                .put("inFlightSampleAtStop", "discarded")
+                 .put("cellChangeDebounceSamples", CELL_CHANGE_DEBOUNCE_SAMPLES)
+                 .put("keepScreenOn", keepScreenOnDuringCapture))
+             .put("manualEvents", JSONArray().apply {
+                 manualEvents.forEach { event ->
+-                    put(JSONObject().put("timestampMillis", event.timestampMillis).put("label", event.label))
++                    put(JSONObject().put("timestampMillis", event.timestampMillis).put("label", event.label)
++                        .put("indoorLabel", event.indoorLabel?.toJson() ?: JSONObject.NULL))
+                 }
+             })
+             .put(
+@@ -462,6 +582,9 @@
+         val journalFileName = activeJournalFileName ?: error("Missing active sample journal")
+         return JSONObject()
+             .put("persistenceVersion", ACTIVE_SESSION_PERSISTENCE_VERSION)
++            .put("capturePaused", !isRecording)
++            .put("initialIndoorLabel", initialIndoorLabel?.toJson() ?: JSONObject.NULL)
++            .put("currentIndoorLabel", indoorLabel.toJson())
+             .put("sessionId", sessionId)
+             .put("startedAtMillis", startedAt)
+             .put(SAMPLE_JOURNAL_FILE_KEY, journalFileName)
+@@ -480,7 +603,8 @@
+             .put("keepScreenOn", keepScreenOnDuringCapture)
+             .put("manualEvents", JSONArray().apply {
+                 manualEvents.forEach { event ->
+-                    put(JSONObject().put("timestampMillis", event.timestampMillis).put("label", event.label))
++                    put(JSONObject().put("timestampMillis", event.timestampMillis).put("label", event.label)
++                        .put("indoorLabel", event.indoorLabel?.toJson() ?: JSONObject.NULL))
+                 }
+             })
+     }
+@@ -489,9 +613,14 @@
+         mainHandler.post {
+             if (activeJournalFileName != journalFileName || storageFailureReported) return@post
+             storageFailureReported = true
++            captureEpoch += 1
+             isRecording = false
+             statusText = "Recording stopped: storage write failed"
+             appendLog("Storage failure: ${error.message ?: error}")
++            if (!isExporting) {
++                val pausedMetadata = buildActiveMetadata()
++                persistenceExecutor.execute { runCatching { sessionStore.writeActiveMetadata(pausedMetadata) } }
++            }
+         }
+     }
+ 
+@@ -554,23 +683,28 @@
+         onCampaignIdChange(activeCampaignId.orEmpty())
+         scenarioIdInput = activeScenarioId.orEmpty()
+         keepScreenOnDuringCapture = root.optBoolean("keepScreenOn", false)
++        initialIndoorLabel = root.optJSONObject("initialIndoorLabel")?.toIndoorLabel()
++        root.optJSONObject("currentIndoorLabel")?.toIndoorLabel()?.let(::onIndoorLabelChange)
+         manualEvents.clear()
+         val restoredEvents = root.optJSONArray("manualEvents") ?: JSONArray()
+         for (index in 0 until restoredEvents.length()) {
+             val event = restoredEvents.optJSONObject(index) ?: continue
+             val label = event.optString("label").trim()
+             val timestamp = event.optLong("timestampMillis", -1L)
+-            if (label.isNotBlank() && timestamp > 0) manualEvents.add(ManualEvent(timestamp, label))
++            if (label.isNotBlank() && timestamp > 0) manualEvents.add(ManualEvent(timestamp, label, event.optJSONObject("indoorLabel")?.toIndoorLabel()))
+         }
+         sampleCount = loaded.journalScan.sampleCount
+         latestSample = loaded.journalScan.lastSample?.let(::parseTruthSample)
+             ?: root.optJSONObject("latestSample")?.let(::parseTruthSample)
+         latestSample?.servingCellStableKey?.let { stableServingCellKey = it }
+         latestSample?.servingCellChangeSeq?.let { servingCellChangeSeqCounter = it }
+-        isRecording = true
++        // Never reuse a persisted fix: its monotonic timestamp may belong to a previous boot.
++        latestLocation = null
++        captureStartedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
++        isRecording = !root.optBoolean("capturePaused", false)
+         storageFailureReported = false
+         lastPersistAtMillis = System.currentTimeMillis()
+-        statusText = "Recording... $sampleCount samples (restored)"
++        statusText = if (isRecording) "Recording... $sampleCount samples (restored)" else "Saved session restored; export available"
+         appendLog("Restored active session: $sessionId ($sampleCount samples)")
+         if (loaded.migratedLegacySession) appendLog("Migrated legacy session to append-only storage")
+         if (loaded.journalScan.malformedLineCount > 0) {
+@@ -592,18 +726,20 @@
+ 
+     private fun parseTruthSample(item: JSONObject): TruthSample? {
+         val recordedAtMillis = item.optLong("recordedAtMillis", -1L)
+-        val elapsedRealtimeNanos = item.optLong("elapsedRealtimeNanos", -1L)
+-        if (recordedAtMillis <= 0L || elapsedRealtimeNanos < 0L) return null
+-
+-        if (!item.has("lat") || !item.has("lon") || !item.has("accuracyM")) return null
++        val elapsedRealtimeNanos = item.optLongOrNull("elapsedRealtimeNanos")
++        if (recordedAtMillis <= 0L) return null
+ 
+         return TruthSample(
+             recordedAtMillis = recordedAtMillis,
+             elapsedRealtimeNanos = elapsedRealtimeNanos,
+-            lat = item.optDouble("lat"),
+-            lon = item.optDouble("lon"),
+-            accuracyM = item.optDouble("accuracyM"),
+-            provider = item.optString("provider", "unknown"),
++            capturedElapsedRealtimeNanos = item.optLongOrNull("capturedElapsedRealtimeNanos"),
++            locationFixTimeMillis = item.optLongOrNull("locationFixTimeMillis"),
++            locationStatus = item.optStringOrNull("locationStatus")
++                ?: if (item.optDoubleOrNull("lat") == null) "missing" else "legacy",
++            lat = item.optDoubleOrNull("lat"),
++            lon = item.optDoubleOrNull("lon"),
++            accuracyM = item.optDoubleOrNull("accuracyM"),
++            provider = item.optStringOrNull("provider"),
+             speedMps = item.optDoubleOrNull("speedMps"),
+             speedAccuracyMps = item.optDoubleOrNull("speedAccuracyMps"),
+             altitudeM = item.optDoubleOrNull("altitudeM"),
+@@ -611,7 +747,10 @@
+             bearingDeg = item.optDoubleOrNull("bearingDeg"),
+             bearingAccuracyDeg = item.optDoubleOrNull("bearingAccuracyDeg"),
+             locationAgeMillis = item.optLongOrNull("locationAgeMillis"),
+-            isMockLocation = item.optBoolean("isMockLocation", false),
++            isMockLocation = item.optBooleanOrNull("isMockLocation"),
++            servingCellSelectionStatus = item.optStringOrNull("servingCellSelectionStatus") ?: "legacy",
++            registeredCellCount = item.optInt("registeredCellCount", -1),
++            servingCellCallerKey = item.optStringOrNull("servingCellCallerKey"),
+             servingCellObservedKey = item.optStringOrNull("servingCellObservedKey"),
+             servingCellStableKey = item.optStringOrNull("servingCellStableKey"),
+             servingCellRat = item.optStringOrNull("servingCellRat"),
+@@ -640,29 +779,37 @@
+ 
+     private fun TruthSample.toJson(): JSONObject {
+         return JSONObject()
++            .put("sampleSchemaVersion", SCHEMA_VERSION)
+             .put("recordedAtMillis", recordedAtMillis)
+-            .put("elapsedRealtimeNanos", elapsedRealtimeNanos)
+-            .put("lat", lat)
+-            .put("lon", lon)
+-            .put("accuracyM", accuracyM)
+-            .put("provider", provider)
+-            .put("speedMps", speedMps)
+-            .put("speedAccuracyMps", speedAccuracyMps)
+-            .put("altitudeM", altitudeM)
+-            .put("verticalAccuracyM", verticalAccuracyM)
+-            .put("bearingDeg", bearingDeg)
+-            .put("bearingAccuracyDeg", bearingAccuracyDeg)
+-            .put("locationAgeMillis", locationAgeMillis)
+-            .put("isMockLocation", isMockLocation)
+-            .put("servingCellObservedKey", servingCellObservedKey)
++            .put("elapsedRealtimeNanos", elapsedRealtimeNanos ?: JSONObject.NULL)
++            .put("capturedElapsedRealtimeNanos", capturedElapsedRealtimeNanos ?: JSONObject.NULL)
++            .put("locationElapsedRealtimeNanos", elapsedRealtimeNanos ?: JSONObject.NULL)
++            .put("locationFixTimeMillis", locationFixTimeMillis ?: JSONObject.NULL)
++            .put("locationStatus", locationStatus)
++            .put("servingCellSelectionStatus", servingCellSelectionStatus)
++            .put("registeredCellCount", registeredCellCount)
++            .put("servingCellCallerKey", servingCellCallerKey ?: JSONObject.NULL)
++            .put("lat", lat ?: JSONObject.NULL)
++            .put("lon", lon ?: JSONObject.NULL)
++            .put("accuracyM", accuracyM ?: JSONObject.NULL)
++            .put("provider", provider ?: JSONObject.NULL)
++            .put("speedMps", speedMps ?: JSONObject.NULL)
++            .put("speedAccuracyMps", speedAccuracyMps ?: JSONObject.NULL)
++            .put("altitudeM", altitudeM ?: JSONObject.NULL)
++            .put("verticalAccuracyM", verticalAccuracyM ?: JSONObject.NULL)
++            .put("bearingDeg", bearingDeg ?: JSONObject.NULL)
++            .put("bearingAccuracyDeg", bearingAccuracyDeg ?: JSONObject.NULL)
++            .put("locationAgeMillis", locationAgeMillis ?: JSONObject.NULL)
++            .put("isMockLocation", isMockLocation ?: JSONObject.NULL)
++            .put("servingCellObservedKey", servingCellObservedKey ?: JSONObject.NULL)
+             .put("servingCellStableKey", servingCellStableKey)
+-            .put("servingCellRat", servingCellRat)
+-            .put("servingCellMcc", servingCellMcc)
+-            .put("servingCellMnc", servingCellMnc)
+-            .put("servingCellAreaCode", servingCellAreaCode)
+-            .put("servingCellId", servingCellId)
+-            .put("servingCellPci", servingCellPci)
+-            .put("servingCellIsRegistered", servingCellIsRegistered)
++            .put("servingCellRat", servingCellRat ?: JSONObject.NULL)
++            .put("servingCellMcc", servingCellMcc ?: JSONObject.NULL)
++            .put("servingCellMnc", servingCellMnc ?: JSONObject.NULL)
++            .put("servingCellAreaCode", servingCellAreaCode ?: JSONObject.NULL)
++            .put("servingCellId", servingCellId ?: JSONObject.NULL)
++            .put("servingCellPci", servingCellPci ?: JSONObject.NULL)
++            .put("servingCellIsRegistered", servingCellIsRegistered ?: JSONObject.NULL)
+             .put("servingCellChangeConfirmed", servingCellChangeConfirmed)
+             .put("servingCellChangeSeq", servingCellChangeSeq)
+             .put("millisSinceServingCellChange", millisSinceServingCellChange)
+@@ -810,6 +957,7 @@
+     }
+ 
+     override fun onCleared() {
++        samplingExecutor.shutdown()
+         persistenceExecutor.shutdown()
+         super.onCleared()
+     }
+--- /dev/null
++++ b/app/src/main/java/com/example/locationdata/IndoorMarkers.kt
+@@ -0,0 +1,123 @@
++package com.example.locationdata
++
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.material3.Card
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.unit.dp
++import org.json.JSONObject
++
++private const val MAX_INDOOR_LABEL_LENGTH = 80
++
++data class IndoorLabel(
++    val building: String = "",
++    val floor: String = "",
++    val point: String = "",
++    val route: String = ""
++)
++
++fun IndoorLabel.toJson(): JSONObject = JSONObject()
++    .put("building", building.take(MAX_INDOOR_LABEL_LENGTH))
++    .put("floor", floor.take(MAX_INDOOR_LABEL_LENGTH))
++    .put("point", point.take(MAX_INDOOR_LABEL_LENGTH))
++    .put("route", route.take(MAX_INDOOR_LABEL_LENGTH))
++
++fun JSONObject.toIndoorLabel(): IndoorLabel = IndoorLabel(
++    building = indoorLabelValue("building"),
++    floor = indoorLabelValue("floor"),
++    point = indoorLabelValue("point"),
++    route = indoorLabelValue("route")
++)
++
++private fun JSONObject.indoorLabelValue(name: String): String =
++    if (!has(name) || isNull(name)) "" else optString(name, "").take(MAX_INDOOR_LABEL_LENGTH)
++
++@Composable
++fun IndoorMarkerPanel(
++    label: IndoorLabel,
++    onLabelChange: (IndoorLabel) -> Unit,
++    onMark: (String) -> Unit,
++    enabled: Boolean,
++    labelsEditable: Boolean = true
++) {
++    Card(modifier = Modifier.fillMaxWidth()) {
++        Column(
++            modifier = Modifier.padding(12.dp),
++            verticalArrangement = Arrangement.spacedBy(8.dp)
++        ) {
++            Text("Indoor checkpoints", style = MaterialTheme.typography.titleMedium)
++            Text(
++                "Optional labels entered by you. Floors are not detected automatically.",
++                style = MaterialTheme.typography.bodySmall
++            )
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                OutlinedTextField(
++                    value = label.building,
++                    onValueChange = { onLabelChange(label.copy(building = it.take(MAX_INDOOR_LABEL_LENGTH))) },
++                    label = { Text("Building") },
++                    singleLine = true,
++                    enabled = labelsEditable,
++                    modifier = Modifier.weight(1f)
++                )
++                OutlinedTextField(
++                    value = label.floor,
++                    onValueChange = { onLabelChange(label.copy(floor = it.take(MAX_INDOOR_LABEL_LENGTH))) },
++                    label = { Text("Floor") },
++                    singleLine = true,
++                    enabled = labelsEditable,
++                    modifier = Modifier.weight(1f)
++                )
++            }
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                OutlinedTextField(
++                    value = label.point,
++                    onValueChange = { onLabelChange(label.copy(point = it.take(MAX_INDOOR_LABEL_LENGTH))) },
++                    label = { Text("Point") },
++                    singleLine = true,
++                    enabled = labelsEditable,
++                    modifier = Modifier.weight(1f)
++                )
++                OutlinedTextField(
++                    value = label.route,
++                    onValueChange = { onLabelChange(label.copy(route = it.take(MAX_INDOOR_LABEL_LENGTH))) },
++                    label = { Text("Route") },
++                    singleLine = true,
++                    enabled = labelsEditable,
++                    modifier = Modifier.weight(1f)
++                )
++            }
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                OutlinedButton(
++                    onClick = { onMark("point_arrival") },
++                    enabled = enabled,
++                    modifier = Modifier.weight(1f)
++                ) { Text("Arrived at point") }
++                OutlinedButton(
++                    onClick = { onMark("movement_start") },
++                    enabled = enabled,
++                    modifier = Modifier.weight(1f)
++                ) { Text("Start moving") }
++            }
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                OutlinedButton(
++                    onClick = { onMark("floor_change_start") },
++                    enabled = enabled,
++                    modifier = Modifier.weight(1f)
++                ) { Text("Start floor change") }
++                OutlinedButton(
++                    onClick = { onMark("floor_change_end") },
++                    enabled = enabled,
++                    modifier = Modifier.weight(1f)
++                ) { Text("End floor change") }
++            }
++        }
++    }
++}
+--- a/app/src/main/java/com/example/locationdata/MainActivity.kt
++++ b/app/src/main/java/com/example/locationdata/MainActivity.kt
+@@ -1,27 +1,19 @@
+ package com.example.locationdata
+ 
+ import android.Manifest
+-import android.annotation.SuppressLint
+ import android.content.pm.PackageManager
+-import android.app.PendingIntent
+-import android.content.Intent
+ import android.os.Bundle
+-import android.os.Build
+-import android.os.Looper
+ import android.view.WindowManager
+ import androidx.activity.ComponentActivity
+ import androidx.activity.compose.setContent
+ import androidx.activity.enableEdgeToEdge
+ import androidx.activity.result.contract.ActivityResultContracts
+-import androidx.activity.viewModels
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.ColumnScope
+ import androidx.compose.foundation.layout.Row
+-import androidx.compose.foundation.layout.Spacer
+ import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.fillMaxWidth
+-import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.verticalScroll
+@@ -46,35 +38,15 @@
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.core.content.ContextCompat
+ import com.example.locationdata.ui.theme.LocationDataTheme
+-import com.google.android.gms.location.FusedLocationProviderClient
+-import com.google.android.gms.location.ActivityRecognition
+-import com.google.android.gms.location.LocationCallback
+-import com.google.android.gms.location.LocationRequest
+-import com.google.android.gms.location.LocationResult
+-import com.google.android.gms.location.LocationServices
+-import com.google.android.gms.location.Priority
+ import java.util.Locale
++import android.os.SystemClock
++import kotlinx.coroutines.delay
++import androidx.compose.runtime.remember
+ 
+ class MainActivity : ComponentActivity() {
+-    private val viewModel: GroundTruthViewModel by viewModels()
+-    private lateinit var fusedLocationClient: FusedLocationProviderClient
++    private val viewModel get() = (application as GroundTruthApplication).recorder
+     private var hasLocationPermission by mutableStateOf(false)
+     private var pendingStartAfterPermission: Boolean = false
+-    private var locationUpdatesActive: Boolean = false
+-    private val activityRecognitionPendingIntent by lazy {
+-        PendingIntent.getBroadcast(
+-            this,
+-            4102,
+-            Intent(this, ActivityRecognitionReceiver::class.java),
+-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+-        )
+-    }
+-
+-    private val locationCallback = object : LocationCallback() {
+-        override fun onLocationResult(locationResult: LocationResult) {
+-            locationResult.locations.forEach { viewModel.onLocation(it) }
+-        }
+-    }
+ 
+     private val permissionLauncher =
+         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+@@ -82,8 +54,8 @@
+             if (hasLocationPermission && pendingStartAfterPermission) {
+                 pendingStartAfterPermission = false
+                 startCaptureWithPermission()
+-            } else if (hasLocationPermission && viewModel.isRecording && !locationUpdatesActive) {
+-                startLocationUpdates()
++            } else if (hasLocationPermission && viewModel.isRecording) {
++                startCaptureService()
+             } else if (!hasLocationPermission) {
+                 pendingStartAfterPermission = false
+                 viewModel.onLocationSamplingFailed("Location permission denied")
+@@ -92,7 +64,6 @@
+ 
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+         hasLocationPermission = checkLocationPermission()
+         enableEdgeToEdge()
+         setContent {
+@@ -105,17 +76,13 @@
+                 ) {
+                     when {
+                         viewModel.isRecording && hasLocationPermission -> {
+-                            startLocationUpdates()
+-                            startActivityRecognition()
+-                            GroundTruthForegroundService.start(this@MainActivity, viewModel.activeSessionId)
++                            startCaptureService()
+                         }
+                         viewModel.isRecording -> {
+-                            viewModel.onLocationSamplingFailed("Location permission required to resume recording")
++                            viewModel.onCaptureServiceStopped("precise location permission required")
+                             GroundTruthForegroundService.stop(this@MainActivity)
+                         }
+                         !viewModel.isRestoring && !viewModel.isExporting -> {
+-                            stopLocationUpdates()
+-                            stopActivityRecognition()
+                             GroundTruthForegroundService.stop(this@MainActivity)
+                         }
+                     }
+@@ -154,6 +121,12 @@
+                         latestSample = viewModel.latestSample,
+                         lastExportPath = viewModel.lastExportPath,
+                         logs = viewModel.logs,
++                        locationSamplingError = viewModel.locationSamplingError,
++                        radioSamplingError = viewModel.radioSamplingError,
++                        captureStartedElapsedRealtimeNanos = viewModel.captureStartedElapsedRealtimeNanos,
++                        indoorLabel = viewModel.indoorLabel,
++                        onIndoorLabelChange = viewModel::onIndoorLabelChange,
++                        onMarkIndoorEvent = viewModel::markIndoorEvent,
+                         hasLocationPermission = hasLocationPermission,
+                         onRequestPermission = {
+                             pendingStartAfterPermission = false
+@@ -168,12 +141,9 @@
+         }
+     }
+ 
+-    override fun onDestroy() {
+-        if (!viewModel.isRecording) {
+-            stopLocationUpdates()
+-            GroundTruthForegroundService.stop(this)
+-        }
+-        super.onDestroy()
++    override fun onResume() {
++        super.onResume()
++        hasLocationPermission = checkLocationPermission()
+     }
+ 
+     private fun startCaptureFlow() {
+@@ -188,26 +158,23 @@
+     }
+ 
+     private fun startCaptureWithPermission() {
+-        if (!startLocationUpdates()) return
+-        if (!viewModel.startSession()) {
+-            stopLocationUpdates()
+-            return
+-        }
+-        startActivityRecognition()
+-        GroundTruthForegroundService.start(this, viewModel.activeSessionId)
++        if (!viewModel.startSession()) return
++        startCaptureService()
++    }
++
++    private fun startCaptureService() {
++        try {
++            GroundTruthForegroundService.start(this, viewModel.activeSessionId)
++        } catch (error: Exception) {
++            viewModel.onCaptureServiceStopped("cannot start service (${error.javaClass.simpleName})")
++        }
+     }
+ 
+     private fun stopCaptureFlow() {
+         if (viewModel.activeSessionId == null) return
+-        stopLocationUpdates()
+-        stopActivityRecognition()
++        // Freezes sample acceptance synchronously before stopping the sensor subscriptions.
+         viewModel.stopSessionAndExport { result ->
+-            if (result.isFailure) {
+-                startLocationUpdates()
+-                startActivityRecognition()
+-            } else {
+-                GroundTruthForegroundService.stop(this)
+-            }
++            if (result.isFailure && viewModel.isRecording) startCaptureService()
+         }
+     }
+ 
+@@ -228,66 +195,9 @@
+             this,
+             Manifest.permission.ACCESS_FINE_LOCATION
+         ) == PackageManager.PERMISSION_GRANTED
+-        val coarseGranted = ContextCompat.checkSelfPermission(
+-            this,
+-            Manifest.permission.ACCESS_COARSE_LOCATION
+-        ) == PackageManager.PERMISSION_GRANTED
+-        return fineGranted || coarseGranted
+-    }
+-
+-    private fun startLocationUpdates(): Boolean {
+-        if (locationUpdatesActive) return true
+-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+-            .setMinUpdateIntervalMillis(1000L)
+-            .build()
+-        return try {
+-            fusedLocationClient.requestLocationUpdates(
+-                request,
+-                locationCallback,
+-                Looper.getMainLooper()
+-            )
+-            locationUpdatesActive = true
+-            true
+-        } catch (se: SecurityException) {
+-            viewModel.onLocationSamplingFailed(se.message ?: "Missing location permission")
+-            false
+-        } catch (t: Throwable) {
+-            viewModel.onLocationSamplingFailed(t.message ?: "Cannot start location updates")
+-            false
+-        }
+-    }
+-
+-    private fun stopLocationUpdates() {
+-        if (!locationUpdatesActive) return
+-        fusedLocationClient.removeLocationUpdates(locationCallback)
+-        locationUpdatesActive = false
+-    }
+-
+-    @SuppressLint("MissingPermission")
+-    private fun startActivityRecognition() {
+-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && ContextCompat.checkSelfPermission(
+-                this,
+-                Manifest.permission.ACTIVITY_RECOGNITION
+-            ) != PackageManager.PERMISSION_GRANTED
+-        ) return
+-        runCatching {
+-            ActivityRecognition.getClient(this)
+-                .requestActivityUpdates(2_000L, activityRecognitionPendingIntent)
+-        }
+-    }
+-
+-    @SuppressLint("MissingPermission")
+-    private fun stopActivityRecognition() {
+-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && ContextCompat.checkSelfPermission(
+-                this,
+-                Manifest.permission.ACTIVITY_RECOGNITION
+-            ) != PackageManager.PERMISSION_GRANTED
+-        ) return
+-        runCatching {
+-            ActivityRecognition.getClient(this)
+-                .removeActivityUpdates(activityRecognitionPendingIntent)
+-        }
+-    }
++        return fineGranted
++    }
++
+ }
+ 
+ @Composable
+@@ -310,6 +220,12 @@
+     latestSample: TruthSample?,
+     lastExportPath: String?,
+     logs: List<String>,
++    locationSamplingError: String? = null,
++    radioSamplingError: String? = null,
++    captureStartedElapsedRealtimeNanos: Long? = null,
++    indoorLabel: IndoorLabel = IndoorLabel(),
++    onIndoorLabelChange: (IndoorLabel) -> Unit = {},
++    onMarkIndoorEvent: (String) -> Unit = {},
+     hasLocationPermission: Boolean,
+     onRequestPermission: () -> Unit,
+     onStartCapture: () -> Unit,
+@@ -317,8 +233,20 @@
+     modifier: Modifier = Modifier
+ ) {
+     val scrollState = rememberScrollState()
+-    val primaryCell = latestSample?.radio?.cells?.firstOrNull { it.registered }
+-        ?: latestSample?.radio?.cells?.firstOrNull()
++    val primaryCell = latestSample?.radio?.cells?.let(::selectServingCell)?.cell
++    var nowElapsed by remember { mutableStateOf(SystemClock.elapsedRealtimeNanos()) }
++    LaunchedEffect(isRecording) {
++        while (isRecording) {
++            nowElapsed = SystemClock.elapsedRealtimeNanos()
++            delay(1_000L)
++        }
++    }
++    val currentSessionSampleTime = latestSample?.capturedElapsedRealtimeNanos?.takeIf {
++        it >= (captureStartedElapsedRealtimeNanos ?: 0L) && it <= SystemClock.elapsedRealtimeNanos()
++    }
++    val sampleAge = (currentSessionSampleTime ?: captureStartedElapsedRealtimeNanos)?.let {
++        ((nowElapsed - it) / 1_000_000L).coerceAtLeast(0L)
++    }
+ 
+     Column(
+         modifier = modifier
+@@ -342,6 +270,14 @@
+                 Text(statusText, style = MaterialTheme.typography.bodyMedium)
+                 InfoRow("Samples", sampleCount.toString())
+                 InfoRow("Session", activeSessionId ?: "Generated at start")
++                if (isRecording) {
++                    InfoRow("Last sample age", sampleAge?.let { "$it ms" } ?: "Waiting for first tick")
++                    if ((sampleAge ?: 0L) > 5_000L) {
++                        Text("Warning: no new recorded sample for over 5 seconds", color = MaterialTheme.colorScheme.error)
++                    }
++                    radioSamplingError?.let { Text("Sample read error: $it", color = MaterialTheme.colorScheme.error) }
++                    locationSamplingError?.let { Text("Location update error: $it; Cell recording continues", color = MaterialTheme.colorScheme.error) }
++                }
+             }
+         }
+ 
+@@ -382,11 +318,11 @@
+ 
+         if (!hasLocationPermission) {
+             Text(
+-                text = "Location permission not granted",
++                text = "Precise location permission not granted",
+                 color = Color(0xFFB00020)
+             )
+             Button(onClick = onRequestPermission) {
+-                Text("Grant location permission")
++                Text("Grant precise location permission")
+             }
+         }
+ 
+@@ -416,6 +352,11 @@
+             }
+         }
+ 
++        IndoorMarkerPanel(
++            indoorLabel, onIndoorLabelChange, onMarkIndoorEvent, isRecording,
++            labelsEditable = !isRestoring && !isExporting
++        )
++
+         if (isRecording) {
+             DataCard("Manual event marker") {
+                 OutlinedTextField(
+@@ -438,10 +379,14 @@
+ 
+         DataCard("Location") {
+             if (latestSample == null) {
+-                Text("Waiting for the first location sample")
++                Text("Waiting for the first recording tick")
+             } else {
+-                InfoRow("Coordinates", "${format(latestSample.lat)}, ${format(latestSample.lon)}")
+-                InfoRow("Accuracy", "${formatShort(latestSample.accuracyM)} m")
++                InfoRow("Location state", latestSample.locationStatus)
++                InfoRow("Coordinates", "${formatCoordinate(latestSample.lat)}, ${formatCoordinate(latestSample.lon)}")
++                InfoRow("Accuracy", "${formatOrNull(latestSample.accuracyM)} m")
++                if (latestSample.locationStatus != "available") {
++                    Text("Location is missing or old; Cell recording continues.")
++                }
+                 InfoRow("Speed", "${formatOrNull(latestSample.speedMps)} m/s")
+                 InfoRow("Bearing", "${formatOrNull(latestSample.bearingDeg)} deg")
+                 InfoRow("Altitude", "${formatOrNull(latestSample.altitudeM)} m")
+@@ -450,17 +395,26 @@
+         }
+ 
+         DataCard("Radio environment") {
++            InfoRow("Read state", latestSample?.radio?.readStatus ?: "waiting")
++            InfoRow("Selection", latestSample?.servingCellSelectionStatus ?: "unknown")
++            InfoRow("Visible cells", latestSample?.radio?.cells?.size?.toString() ?: "0")
++            latestSample?.radio?.readErrorReason?.let {
++                Text("Radio read warning: $it", color = MaterialTheme.colorScheme.error)
++            }
+             if (latestSample == null || primaryCell == null) {
+-                Text("No cellular measurement available")
++                Text("No unambiguous registered serving cell available; raw cells are still saved.")
+             } else {
+-                InfoRow("Serving cell", latestSample.servingCellStableKey ?: primaryCell.key)
++                InfoRow("Observed serving cell", primaryCell.key)
++                InfoRow("Caller-compatible identity", latestSample.servingCellCallerKey ?: "incomplete identity")
+                 InfoRow("RAT / channel", "${primaryCell.rat} / ${primaryCell.channelNumber ?: "unknown"}")
+                 InfoRow("Band(s)", primaryCell.bands.ifEmpty { listOf("unknown") }.joinToString())
+                 InfoRow("Signal", "${primaryCell.signalDbm ?: "unknown"} dBm, level ${primaryCell.signalLevel ?: "?"}")
+                 val quality = primaryCell.signalMetrics.entries.joinToString { "${it.key}=${it.value}" }
+                 if (quality.isNotBlank()) InfoRow("Quality", quality)
+-                InfoRow("Visible cells", latestSample.radio?.cells?.size?.toString() ?: "0")
+                 InfoRow("Cell data age", "${primaryCell.ageMillis ?: -1} ms")
++                if ((primaryCell.ageMillis ?: 0L) > LOCATION_STALE_AFTER_MS) {
++                    Text("Warning: local radio measurement is over 10 seconds old", color = MaterialTheme.colorScheme.error)
++                }
+                 InfoRow("Last transition", latestSample.servingCellTransitionType ?: "none")
+                 InfoRow("Since transition", "${latestSample.millisSinceServingCellChange ?: -1} ms")
+             }
+@@ -518,8 +472,8 @@
+     }
+ }
+ 
+-private fun format(value: Double): String = String.format(Locale.US, "%.6f", value)
+-private fun formatShort(value: Double): String = String.format(Locale.US, "%.1f", value)
++
++private fun formatCoordinate(value: Double?): String = value?.let { String.format(Locale.US, "%.6f", it) } ?: "unknown"
+ 
+ private fun formatOrNull(value: Double?): String {
+     return value?.let { String.format(Locale.US, "%.3f", it) } ?: "null"
+--- /dev/null
++++ b/app/src/main/java/com/example/locationdata/ServingCellSelection.kt
+@@ -0,0 +1,30 @@
++package com.example.locationdata
++
++import android.telephony.CellInfo
++
++data class ServingCellSelection(
++    val cell: CellSnapshot?,
++    val status: String,
++    val registeredCellCount: Int
++)
++
++/** Do not turn an unregistered neighbour or an arbitrary member of a multi-cell report into a serving cell. */
++fun selectServingCell(cells: List<CellSnapshot>): ServingCellSelection {
++    val registered = cells.filter { it.registered }
++    val primary = registered.filter { it.connectionStatus == CellInfo.CONNECTION_PRIMARY_SERVING }
++    return when {
++        primary.size == 1 -> ServingCellSelection(primary.single(), "selected_primary", registered.size)
++        registered.size == 1 -> ServingCellSelection(registered.single(), "selected_registered", 1)
++        registered.isEmpty() -> ServingCellSelection(null, "no_registered", 0)
++        else -> ServingCellSelection(null, "ambiguous_registered", registered.size)
++    }
++}
++
++/** Identity available to a single-cell caller model; PCI stays in the raw snapshot as a diagnostic. */
++fun CellSnapshot.callerCompatibleKey(): String? {
++    val fullMcc = mcc ?: return null
++    val fullMnc = mnc ?: return null
++    val fullArea = areaCode ?: return null
++    val fullCellId = cellId ?: return null
++    return "$rat:$fullMcc-$fullMnc:$fullArea:$fullCellId"
++}
+--- a/app/src/main/java/com/example/locationdata/TelemetrySnapshot.kt
++++ b/app/src/main/java/com/example/locationdata/TelemetrySnapshot.kt
+@@ -52,8 +52,35 @@
+     val emergencyOnly: Boolean?,
+     val operatorAlphaLong: String?,
+     val operatorNumeric: String?,
+-    val registration: List<String>
++    val registration: List<String>,
++    val readStatus: String = "unknown",
++    val readErrorReason: String? = null,
++    val capturedElapsedRealtimeNanos: Long? = null
+ )
++
++internal data class RadioCellReadResult(
++    val cells: List<CellSnapshot>,
++    val status: String,
++    val errorReason: String? = null
++)
++
++/** Keep missing measurements distinct from denied or failed reads, without storing exception messages. */
++internal fun readRadioCells(
++    hasLocationPermission: Boolean,
++    telephonyAvailable: Boolean,
++    readCells: () -> List<CellSnapshot>
++): RadioCellReadResult {
++    if (!telephonyAvailable) return RadioCellReadResult(emptyList(), "unavailable", "telephony_unavailable")
++    if (!hasLocationPermission) return RadioCellReadResult(emptyList(), "permission_denied", "location_permission_missing")
++    return try {
++        val cells = readCells()
++        RadioCellReadResult(cells, if (cells.isEmpty()) "empty" else "ok")
++    } catch (_: SecurityException) {
++        RadioCellReadResult(emptyList(), "permission_denied", "SecurityException")
++    } catch (error: Exception) {
++        RadioCellReadResult(emptyList(), "error", error.javaClass.simpleName)
++    }
++}
+ 
+ data class DeviceContextSnapshot(
+     val interactive: Boolean,
+@@ -82,27 +109,41 @@
+     private val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
+ 
+     @SuppressLint("MissingPermission")
+-    fun captureRadio(nowMillis: Long): RadioSnapshot? {
+-        if (!hasLocationPermission()) return null
+-        val tm = telephony ?: return null
+-        val cells = runCatching { tm.allCellInfo.orEmpty().mapNotNull { captureCell(it, nowMillis) } }
+-            .getOrDefault(emptyList())
++    fun captureRadio(nowMillis: Long): RadioSnapshot {
++        val capturedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
++        val tm = telephony
++        var cellParseFailed = false
++        val rawRead = readRadioCells(hasLocationPermission(), tm != null) {
++            tm!!.allCellInfo.orEmpty().mapNotNull { cell ->
++                val snapshot = try {
++                    captureCell(cell)
++                } catch (_: Exception) {
++                    null
++                }
++                if (snapshot == null) cellParseFailed = true
++                snapshot
++            }
++        }
++        val cellRead = if (cellParseFailed) rawRead.copy(status = "error", errorReason = "cell_parse_failed") else rawRead
+         val hasPhonePermission = hasPhoneStatePermission()
+         val service = if (hasPhonePermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+-            runCatching { tm.serviceState }.getOrNull()
++            runCatching { tm?.serviceState }.getOrNull()
+         } else null
+         return RadioSnapshot(
+             capturedAtMillis = nowMillis,
+-            cells = cells,
+-            dataState = runCatching { tm.dataState }.getOrNull(),
+-            dataActivity = runCatching { tm.dataActivity }.getOrNull(),
+-            networkType = if (hasPhonePermission) runCatching { tm.dataNetworkType }.getOrNull() else null,
++            cells = cellRead.cells,
++            dataState = runCatching { tm?.dataState }.getOrNull(),
++            dataActivity = runCatching { tm?.dataActivity }.getOrNull(),
++            networkType = if (hasPhonePermission) runCatching { tm?.dataNetworkType }.getOrNull() else null,
+             serviceState = service?.state,
+             roaming = service?.roaming,
+             emergencyOnly = service?.let { invokeBoolean(it, "isEmergencyOnly") },
+             operatorAlphaLong = if (hasPhonePermission) service?.operatorAlphaLong?.toString() else null,
+             operatorNumeric = if (hasPhonePermission) service?.operatorNumeric else null,
+-            registration = captureRegistration(service)
++            registration = captureRegistration(service),
++            readStatus = cellRead.status,
++            readErrorReason = cellRead.errorReason,
++            capturedElapsedRealtimeNanos = capturedElapsedRealtimeNanos
+         )
+     }
+ 
+@@ -146,7 +187,7 @@
+         )
+     }
+ 
+-    private fun captureCell(cell: CellInfo, nowMillis: Long): CellSnapshot? {
++    private fun captureCell(cell: CellInfo): CellSnapshot? {
+         val identity = runCatching { cell.javaClass.getMethod("getCellIdentity").invoke(cell) }.getOrNull() ?: return null
+         val signal = runCatching { cell.javaClass.getMethod("getCellSignalStrength").invoke(cell) as? CellSignalStrength }.getOrNull()
+         val rat = identity.javaClass.simpleName.removePrefix("CellIdentity").uppercase()
+@@ -236,6 +277,8 @@
+ 
+ fun RadioSnapshot.toJson(): JSONObject = JSONObject()
+     .put("capturedAtMillis", capturedAtMillis).put("cells", JSONArray().apply { cells.forEach { put(it.toJson()) } })
++    .put("capturedElapsedRealtimeNanos", capturedElapsedRealtimeNanos)
++    .put("readStatus", readStatus).put("readErrorReason", readErrorReason)
+     .put("dataState", dataState).put("dataActivity", dataActivity).put("networkType", networkType)
+     .put("serviceState", serviceState).put("roaming", roaming).put("emergencyOnly", emergencyOnly)
+     .put("operatorAlphaLong", operatorAlphaLong).put("operatorNumeric", operatorNumeric)
+@@ -268,7 +311,10 @@
+         emergencyOnly = nullableBoolean("emergencyOnly"),
+         operatorAlphaLong = nullableString("operatorAlphaLong"),
+         operatorNumeric = nullableString("operatorNumeric"),
+-        registration = optJSONArray("registration").toStringList()
++        registration = optJSONArray("registration").toStringList(),
++        readStatus = nullableString("readStatus") ?: "unknown",
++        readErrorReason = nullableString("readErrorReason"),
++        capturedElapsedRealtimeNanos = nullableLong("capturedElapsedRealtimeNanos")
+     )
+ }
+ 
+--- /dev/null
++++ b/app/src/test/java/com/example/locationdata/GroundTruthCaptureTest.kt
+@@ -0,0 +1,271 @@
++package com.example.locationdata
++
++import android.Manifest
++import android.app.Application
++import android.content.Context
++import android.location.Location
++import android.os.Looper
++import android.os.SystemClock
++import android.telephony.CellInfo
++import android.telephony.TelephonyManager
++import androidx.lifecycle.ViewModelProvider
++import androidx.lifecycle.ViewModelStore
++import androidx.lifecycle.ViewModelStoreOwner
++import androidx.test.core.app.ApplicationProvider
++import java.io.File
++import java.time.Duration
++import org.json.JSONObject
++import org.junit.After
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Assert.fail
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.robolectric.RobolectricTestRunner
++import org.robolectric.Shadows.shadowOf
++import org.robolectric.annotation.Config
++import org.robolectric.annotation.LooperMode
++import org.robolectric.shadows.CellInfoLteBuilder
++import org.robolectric.shadows.ShadowSystemClock
++
++/** Exercises the real recorder, asynchronous telemetry, journal, and export without a device. */
++@RunWith(RobolectricTestRunner::class)
++@Config(sdk = [28], application = Application::class)
++@LooperMode(LooperMode.Mode.PAUSED)
++class GroundTruthCaptureTest {
++    private lateinit var application: Application
++    private val stores = mutableListOf<ViewModelStore>()
++
++    @Before
++    fun setUp() {
++        application = ApplicationProvider.getApplicationContext()
++        application.filesDir.listFiles()?.filter { it.name.startsWith("ground_truth_") }
++            ?.forEach(File::delete)
++        application.getSharedPreferences("research_preferences", Context.MODE_PRIVATE)
++            .edit().clear().commit()
++        shadowOf(application).grantPermissions(
++            Manifest.permission.ACCESS_FINE_LOCATION,
++            Manifest.permission.READ_PHONE_STATE
++        )
++        val telephony = application.getSystemService(TelephonyManager::class.java)
++        shadowOf(telephony).setAllCellInfo(emptyList())
++        ShadowSystemClock.advanceBy(Duration.ofSeconds(20))
++    }
++
++    @After
++    fun tearDown() {
++        // Clearing a ViewModelStore closes the recorder's executors via its real onCleared().
++        stores.forEach(ViewModelStore::clear)
++        shadowOf(Looper.getMainLooper()).idle()
++    }
++
++    @Test
++    fun timerCapturesAndExportsRowsEvenWhenNoLocationFixArrives() {
++        val recorder = startRecorder()
++
++        captureTick(recorder)
++        ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
++        captureTick(recorder)
++
++        val last = requireNotNull(recorder.latestSample)
++        assertEquals(2, recorder.sampleCount)
++        assertEquals("missing", last.locationStatus)
++        assertNull(last.lat)
++        assertNull(last.elapsedRealtimeNanos)
++        assertNotNull(last.capturedElapsedRealtimeNanos)
++        assertEquals(MovementClass.UNKNOWN, last.movementClass)
++
++        val root = export(recorder)
++        assertEquals(7, root.getInt("schemaVersion"))
++        val samples = root.getJSONArray("samples")
++        assertEquals(2, samples.length())
++        for (index in 0 until samples.length()) {
++            val sample = samples.getJSONObject(index)
++            assertEquals("missing", sample.getString("locationStatus"))
++            listOf("lat", "lon", "accuracyM", "locationFixTimeMillis", "elapsedRealtimeNanos")
++                .forEach { field -> assertTrue("$field must be explicitly null", sample.has(field) && sample.isNull(field)) }
++            assertTrue(sample.getLong("capturedElapsedRealtimeNanos") > 0)
++            assertEquals("empty", sample.getJSONObject("radio").getString("readStatus"))
++        }
++    }
++
++    @Test
++    fun locationCallbackDoesNotCreateRowsAndTicksKeepOriginalFixTimeAndGrowingAge() {
++        val recorder = startRecorder()
++        val fixElapsed = SystemClock.elapsedRealtimeNanos() - 500_000_000L
++        val fixTime = System.currentTimeMillis() - 500L
++        val location = Location("fused").apply {
++            latitude = 25.0
++            longitude = 121.5
++            accuracy = 6f
++            speed = 1f
++            time = fixTime
++            elapsedRealtimeNanos = fixElapsed
++        }
++
++        recorder.onLocation(location)
++        assertEquals(0, recorder.sampleCount)
++        assertNull(recorder.latestSample)
++
++        captureTick(recorder)
++        val first = requireNotNull(recorder.latestSample)
++        assertEquals(500L, first.locationAgeMillis)
++        assertEquals("available", first.locationStatus)
++
++        // No second location callback: a new recording tick reuses the fix with its real age.
++        ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
++        captureTick(recorder)
++        val second = requireNotNull(recorder.latestSample)
++        assertEquals(2_500L, second.locationAgeMillis)
++        assertEquals(fixElapsed, second.elapsedRealtimeNanos)
++        assertEquals(fixTime, second.locationFixTimeMillis)
++        assertTrue(second.capturedElapsedRealtimeNanos!! > first.capturedElapsedRealtimeNanos!!)
++        assertEquals(first.lat, second.lat)
++
++        ShadowSystemClock.advanceBy(Duration.ofSeconds(11))
++        captureTick(recorder)
++        val stale = requireNotNull(recorder.latestSample)
++        assertEquals("stale", stale.locationStatus)
++        assertEquals(13_500L, stale.locationAgeMillis)
++        assertEquals(MovementClass.UNKNOWN, stale.movementClass)
++        assertEquals(fixElapsed, stale.elapsedRealtimeNanos)
++        assertEquals(fixTime, stale.locationFixTimeMillis)
++        assertEquals(3, export(recorder).getJSONArray("samples").length())
++    }
++
++    @Test
++    fun unregisteredNeighbourStaysInRawExportWithoutBecomingServingCell() {
++        val neighbour = CellInfoLteBuilder.newBuilder()
++            .setRegistered(false)
++            .setTimeStampNanos(SystemClock.elapsedRealtimeNanos())
++            .setCellConnectionStatus(CellInfo.CONNECTION_PRIMARY_SERVING)
++            .build()
++        shadowOf(application.getSystemService(TelephonyManager::class.java))
++            .setAllCellInfo(listOf(neighbour))
++        val recorder = startRecorder()
++
++        captureTick(recorder)
++
++        val last = requireNotNull(recorder.latestSample)
++        assertEquals("no_registered", last.servingCellSelectionStatus)
++        assertEquals(0, last.registeredCellCount)
++        assertNull(last.servingCellObservedKey)
++        assertNull(last.servingCellCallerKey)
++        assertEquals(1, last.radio!!.cells.size)
++        assertFalse(last.radio.cells.single().registered)
++
++        val sample = export(recorder).getJSONArray("samples").getJSONObject(0)
++        assertTrue(sample.isNull("servingCellObservedKey"))
++        assertTrue(sample.isNull("servingCellCallerKey"))
++        val cells = sample.getJSONObject("radio").getJSONArray("cells")
++        assertEquals(1, cells.length())
++        assertEquals("LTE", cells.getJSONObject(0).getString("rat"))
++        assertFalse(cells.getJSONObject(0).getBoolean("registered"))
++    }
++
++    @Test
++    fun pausedJournalWithNullLocationRestoresAndExportsWithoutDroppingRows() {
++        val first = startRecorder()
++        captureTick(first)
++        ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
++        captureTick(first)
++        val sessionId = requireNotNull(first.activeSessionId)
++        first.onCaptureServiceStopped("test pause", sessionId)
++        assertFalse(first.statusText, first.isRecording)
++
++        // Wait for the actual serialized metadata write before simulating a new recorder.
++        val metadataFile = File(application.filesDir, ACTIVE_SESSION_STATE_FILE)
++        await("paused session metadata was not written") {
++            runCatching {
++                val metadata = JSONObject(metadataFile.readText())
++                metadata.optBoolean("capturePaused") && metadata.optInt("sampleCount") == 2
++            }.getOrDefault(false)
++        }
++        val restored = newRecorder()
++        await("session restoration did not complete") { !restored.isRestoring }
++
++        assertEquals(sessionId, restored.activeSessionId)
++        assertFalse(restored.isRecording)
++        assertEquals(2, restored.sampleCount)
++        assertNotNull(restored.latestSample)
++        assertEquals("missing", restored.latestSample!!.locationStatus)
++        assertNull(restored.latestSample!!.lat)
++        assertNull(restored.latestSample!!.elapsedRealtimeNanos)
++        assertNotNull(restored.latestSample!!.capturedElapsedRealtimeNanos)
++
++        val root = export(restored)
++        assertEquals(sessionId, root.getString("sessionId"))
++        val samples = root.getJSONArray("samples")
++        assertEquals(2, samples.length())
++        for (index in 0 until samples.length()) {
++            assertTrue(samples.getJSONObject(index).isNull("lat"))
++            assertEquals("missing", samples.getJSONObject(index).getString("locationStatus"))
++        }
++        assertFalse(metadataFile.exists())
++    }
++
++    @Test
++    fun lateServiceStopFromPreviousSessionDoesNotPauseNewSession() {
++        val recorder = startRecorder()
++        val oldSessionId = requireNotNull(recorder.activeSessionId)
++        export(recorder)
++        ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
++        assertTrue(recorder.startSession())
++        assertTrue(oldSessionId != recorder.activeSessionId)
++
++        recorder.onCaptureServiceStopped("previous service instance destroyed", oldSessionId)
++
++        assertTrue(recorder.statusText, recorder.isRecording)
++        captureTick(recorder)
++        assertEquals(1, export(recorder).getJSONArray("samples").length())
++    }
++
++    private fun startRecorder(): GroundTruthViewModel = newRecorder().apply {
++        campaignIdInput = "indoor_test"
++        scenarioIdInput = "known_floor"
++        assertTrue("recorder should start", startSession())
++    }
++
++    private fun newRecorder(): GroundTruthViewModel {
++        val owner = object : ViewModelStoreOwner {
++            override val viewModelStore = ViewModelStore()
++        }
++        stores.add(owner.viewModelStore)
++        // A static getInstance() factory would retain an Application from an earlier Robolectric case.
++        return ViewModelProvider(owner, ViewModelProvider.AndroidViewModelFactory(application))[
++            GroundTruthViewModel::class.java
++        ]
++    }
++
++    private fun captureTick(recorder: GroundTruthViewModel) {
++        val expected = recorder.sampleCount + 1
++        recorder.captureSample()
++        await("recording tick did not append a sample: ${recorder.statusText}") {
++            recorder.sampleCount == expected || recorder.radioSamplingError != null
++        }
++        assertNull("telemetry failed: ${recorder.statusText}", recorder.radioSamplingError)
++        assertEquals(expected, recorder.sampleCount)
++    }
++
++    private fun export(recorder: GroundTruthViewModel): JSONObject {
++        var completed: Result<File>? = null
++        recorder.stopSessionAndExport { completed = it }
++        await("session export did not complete") { completed != null }
++        return JSONObject(requireNotNull(completed).getOrThrow().readText())
++    }
++
++    private fun await(message: String, condition: () -> Boolean) {
++        repeat(500) {
++            shadowOf(Looper.getMainLooper()).idle()
++            if (condition()) return
++            // The telemetry and journal executors are real background threads.
++            Thread.sleep(10L)
++        }
++        val metadata = File(application.filesDir, ACTIVE_SESSION_STATE_FILE)
++        fail("$message; metadata=${runCatching { metadata.readText() }.getOrElse { it.toString() }}")
++    }
++}
+--- /dev/null
++++ b/app/src/test/java/com/example/locationdata/RadioCellReadTest.kt
+@@ -0,0 +1,64 @@
++package com.example.locationdata
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNull
++import org.junit.Test
++
++class RadioCellReadTest {
++    @Test
++    fun successfulReadPreservesCellMeasurementDetails() {
++        val cell = CellSnapshot(
++            key = "LTE:466-92:17:123456:123", rat = "LTE", registered = true,
++            connectionStatus = null, timestampMillis = 1000, ageMillis = 700,
++            mcc = 466, mnc = 92, areaCode = 17, cellId = 123456, pci = 123,
++            channelNumber = null, bands = emptyList(), bandwidthKhz = null,
++            signalLevel = null, signalAsu = null, signalDbm = -100, signalMetrics = emptyMap()
++        )
++        val result = readRadioCells(hasLocationPermission = true, telephonyAvailable = true) { listOf(cell) }
++        assertEquals("ok", result.status)
++        assertEquals(listOf(cell), result.cells)
++        assertNull(result.errorReason)
++    }
++
++    @Test
++    fun permissionDeniedSkipsRead() {
++        val result = readRadioCells(hasLocationPermission = false, telephonyAvailable = true) {
++            error("must not read without permission")
++        }
++        assertEquals("permission_denied", result.status)
++        assertEquals("location_permission_missing", result.errorReason)
++    }
++
++    @Test
++    fun unavailableTelephonySkipsRead() {
++        val result = readRadioCells(hasLocationPermission = true, telephonyAvailable = false) {
++            error("must not read without telephony")
++        }
++        assertEquals("unavailable", result.status)
++    }
++
++    @Test
++    fun successfulEmptyReadIsDistinctFromFailure() {
++        val result = readRadioCells(hasLocationPermission = true, telephonyAvailable = true) { emptyList() }
++        assertEquals("empty", result.status)
++        assertNull(result.errorReason)
++    }
++
++    @Test
++    fun revokedPermissionIsRecordedWithoutExceptionMessage() {
++        val result = readRadioCells(hasLocationPermission = true, telephonyAvailable = true) {
++            throw SecurityException("private vendor details")
++        }
++        assertEquals("permission_denied", result.status)
++        assertEquals("SecurityException", result.errorReason)
++    }
++
++    @Test
++    fun failedReadDoesNotLookLikeNoCells() {
++        val result = readRadioCells(hasLocationPermission = true, telephonyAvailable = true) {
++            throw IllegalStateException("private vendor details")
++        }
++        assertEquals("error", result.status)
++        assertEquals("IllegalStateException", result.errorReason)
++    }
++}
+--- /dev/null
++++ b/app/src/test/java/com/example/locationdata/ServingCellSelectionTest.kt
+@@ -0,0 +1,94 @@
++package com.example.locationdata
++
++import android.telephony.CellInfo
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNull
++import org.junit.Test
++
++class ServingCellSelectionTest {
++    @Test
++    fun noRegisteredCellDoesNotFallBackToNeighbour() {
++        val selection = selectServingCell(listOf(cell("neighbour", registered = false)))
++        assertNull(selection.cell)
++        assertEquals("no_registered", selection.status)
++        assertEquals(0, selection.registeredCellCount)
++    }
++
++    @Test
++    fun uniqueRegisteredCellCanBeSelectedWithoutConnectionStatus() {
++        val serving = cell("serving")
++        val selection = selectServingCell(listOf(cell("neighbour", registered = false), serving))
++        assertEquals(serving, selection.cell)
++        assertEquals("selected_registered", selection.status)
++        assertEquals(1, selection.registeredCellCount)
++    }
++
++    @Test
++    fun uniquePrimaryWinsOverRegisteredSecondary() {
++        val primary = cell("primary", connectionStatus = CellInfo.CONNECTION_PRIMARY_SERVING)
++        val secondary = cell("secondary", connectionStatus = CellInfo.CONNECTION_SECONDARY_SERVING)
++        val selection = selectServingCell(listOf(secondary, primary))
++        assertEquals(primary, selection.cell)
++        assertEquals("selected_primary", selection.status)
++        assertEquals(2, selection.registeredCellCount)
++    }
++
++    @Test
++    fun multiplePrimaryCellsAreAmbiguous() {
++        val selection = selectServingCell(listOf(
++            cell("first", connectionStatus = CellInfo.CONNECTION_PRIMARY_SERVING),
++            cell("second", connectionStatus = CellInfo.CONNECTION_PRIMARY_SERVING)
++        ))
++        assertNull(selection.cell)
++        assertEquals("ambiguous_registered", selection.status)
++        assertEquals(2, selection.registeredCellCount)
++    }
++
++    @Test
++    fun multipleRegisteredWithoutPrimaryAreAmbiguous() {
++        val selection = selectServingCell(listOf(
++            cell("first", connectionStatus = CellInfo.CONNECTION_SECONDARY_SERVING), cell("second")
++        ))
++        assertNull(selection.cell)
++        assertEquals("ambiguous_registered", selection.status)
++    }
++
++    @Test
++    fun unregisteredPrimaryFlagCannotOverrideRegistration() {
++        val serving = cell("serving")
++        val selection = selectServingCell(listOf(
++            cell("unregistered", registered = false, connectionStatus = CellInfo.CONNECTION_PRIMARY_SERVING), serving
++        ))
++        assertEquals(serving, selection.cell)
++    }
++
++    @Test
++    fun callerCompatibleIdentityExcludesPciAndRequiresFullTuple() {
++        val first = cell("first")
++        val second = first.copy(key = "second", pci = 456)
++        assertEquals("LTE:466-92:17:123456", first.callerCompatibleKey())
++        assertEquals(first.callerCompatibleKey(), second.callerCompatibleKey())
++        assertNull(first.copy(areaCode = null).callerCompatibleKey())
++    }
++
++    private fun cell(key: String, registered: Boolean = true, connectionStatus: Int? = null) = CellSnapshot(
++        key = key,
++        rat = "LTE",
++        registered = registered,
++        connectionStatus = connectionStatus,
++        timestampMillis = 1000,
++        ageMillis = 0,
++        mcc = 466,
++        mnc = 92,
++        areaCode = 17,
++        cellId = 123456,
++        pci = 123,
++        channelNumber = null,
++        bands = emptyList(),
++        bandwidthKhz = null,
++        signalLevel = null,
++        signalAsu = null,
++        signalDbm = null,
++        signalMetrics = emptyMap()
++    )
++}
