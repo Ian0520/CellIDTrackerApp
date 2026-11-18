@@ -143,6 +143,8 @@ PROBE_INTERVAL_SECONDS=10 \
 
 The file contains raw JSONL records with timestamps, transport metadata and captured SIP content. Default limits are 16 MiB per file, eight files total and an 8 MiB writer queue. Configure them with `SIP_CAPTURE_MAX_BYTES`, `SIP_CAPTURE_MAX_FILES` and `SIP_CAPTURE_QUEUE_MAX_BYTES`. Files rotate to suffixes `.1` through `.7` at the default file count; queue overflow can drop records. Check `capture_summary` for recorded drop counts when assessing completeness.
 
+Transport records may contain only part of a SIP message. TCP SYN/FIN/RST observations produce `tcp_connection_boundary` events. Fragmented IP packets, receive truncation, invalid lengths and unsupported IPv6 extension chains produce packet-quality events; they are not proof of complete SIP collection. The receiver validates packet lengths and uses a buffer sized for ordinary maximum IPv4/IPv6 packets. IP fragment reassembly remains unsupported.
+
 ### 4.4 Other CLI modes
 
 | Flag | Actual behavior |

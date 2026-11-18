@@ -1,5 +1,7 @@
 # Caller-Side SIP Observability Experiment
 
+> **2026-11-10 UI update:** This is the earlier A-B-A protocol. Current CellIDTracker sessions automatically enable SIP capture and generate caller campaign/condition metadata; the caller fields and capture toggle below no longer appear. Keep target condition labels in LocationData and pair exports using session records and timestamps. The current research priority is [the local/probe database plan](LOCAL_DATABASE_PRECISION_PLAN.md).
+
 ## Fixed Configuration
 
 - Caller: rooted CellIDTracker phone with comprehensive capture enabled.
@@ -43,6 +45,8 @@ Run A, then B, then A again. Networks A and B should use different APs and inter
 After the A-B-A sequence, keep the target on Network A and collect separate sessions for 20 normal ring-and-cancel attempts and 10 manually rejected attempts. Defer answered-call collection until that path has passed a short controlled smoke test. Never mix these actions into an A-B-A block.
 
 ## Export Locations
+
+Current research exports include `native/sip_messages.sanitized.jsonl` for complete SIP-message analysis, alongside packet-level `sip_capture.sanitized.jsonl` files. Messages are reconstructed from private raw bytes before redaction; their `contributing_sequences`, `first_byte_elapsed_ns` and `completed_elapsed_ns` preserve packet provenance and timing boundaries. Sort by message timestamps when merging streams. Manifest version 2 includes reassembly counters and incompleteness warnings. Packet payload sizes describe original captured bytes; sanitized body lengths can change during redaction, and sanitized `Content-Length` is recalculated. Unresolved fragment text is excluded. The normal session JSON remains separate from research sanitization.
 
 Sanitized caller files:
 

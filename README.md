@@ -8,9 +8,19 @@ Key features:
 - Run the probe (root) and consume versioned native events containing timing and MCC/MNC/LAC/CID.
 - Send the latest cell from each native attempt to Google Geolocation; show lat/lon/accuracy on the map with an accuracy circle.
 - Start/stop offline experiment sessions with automatic date/time IDs and filenames.
-- Optionally record bounded caller-side SIP and device context for controlled research campaigns.
+- Automatically record bounded caller-side SIP and device context during experiment sessions.
 - View recent probe history (time, victim, cell info, location) and tap an entry to restore its location on the map.
 - View the raw log stream inside the app.
+
+## Current floor research
+
+Offline floor research uses unique caller (complete Cell identity, floor) pairs
+and a tracker that prefers fewer floor changes over the past 60 seconds. It
+outputs one floor, two adjacent floors or unknown, only when a Cell ID returns.
+All caller recordings build the database and are replayed for the requested
+same-dataset check, without a train/test split. LocationData supplies reference
+labels; local radio cells are excluded from inference. See
+[the implementation and same-dataset results](docs/CALLER_FLOOR_TRACKER_REPLAY.md).
 
 ## Requirements
 - Rooted device (probe binary runs via `su`).
@@ -54,7 +64,7 @@ The build injects it into `BuildConfig.GOOGLE_API_KEY`; the app and bundled prob
 
 1. Open **Probe**, enter the authorized test number, and press **Set victim number**. The native workflow expects a local Taiwan number beginning with `0`, for example `09XXXXXXXX` with the placeholder replaced by the actual number.
 2. Select the INVITE interval, 183 response limit and auto-restart. The app's initial interval is **10 seconds**; explicitly select response limit **1** for the existing research setup.
-3. For session recording, enable **Comprehensive SIP research capture** as needed, fill Campaign/Condition, and press **Start session**.
+3. Press **Start session** before probing. The app generates the session ID and starts SIP research capture automatically; no campaign, condition, or notes entry is needed.
 4. Press **Probe** separately and check new log/results. Session creation does not start probing.
 5. Press **Stop**, wait for **Idle**, then **Stop & export** if a session is active.
 
@@ -62,7 +72,7 @@ The app's native invocation is equivalent to:
 
 ```text
 working directory: /data/local/tmp/cellidtracker-<appUid>
-environment: GOOGLE_API_KEY, PROBE_INTERVAL_SECONDS, optional SIP_CAPTURE_*
+environment: GOOGLE_API_KEY, PROBE_INTERVAL_SECONDS, SIP_CAPTURE_* during an experiment session
 command: ./probe/spoof -r --verbose 1 [--session-progress-response-limit N]
 ```
 
@@ -100,7 +110,7 @@ Gradle automatically synchronizes config files, but does not compile or copy the
 The JSON contains each entry’s victim, mcc/mnc/lac/cid, lat/lon/accuracy, timestamp, towersCount, and the full towers array used for that lookup.
 
 ## Offline experiment session export (probe app side)
-1. In the **Probe** tab, tap **Start session**. The session ID is generated automatically from the current date and time.
+1. In the **Probe** tab, tap **Start session**. The session ID and capture metadata are generated automatically, and SIP research capture starts with the session.
 2. Tap **Probe** to start probing.
 3. Tap **Stop** and wait for **Idle** when finished.
 4. Tap **Stop & export**.
@@ -112,8 +122,14 @@ Schema 4 exports one record per native INVITE attempt, including attempts withou
 
 ## Caller-side SIP observability experiment
 
-The existing campaign selects a **10-second INVITE interval**, **one provisional response**, and auto-restart enabled. Ten seconds is a selected setting, not the native software's hard lower bound; actual sends can be later. Both apps generate and retain a date-based campaign ID when first needed; they do not automatically synchronize it or reset it each day. Verify/update the campaign for the current visit, then assign conditions according to the experiment's pairing plan.
+The existing campaign selects a **10-second INVITE interval**, **one provisional response**, and auto-restart enabled. Ten seconds is a selected setting, not the native software's hard lower bound; actual sends can be later. CellIDTracker generates its capture metadata automatically. Keep building, floor, and point labels in LocationData, and pair the two apps' exports by their session records and timestamps; automatic caller metadata does not synchronize the apps or provide target location labels.
 
-Raw SIP evidence remains in app-private storage. `Stop & export` writes a sanitized research directory beside the normal session export. Follow [`docs/SIP_OBSERVABILITY_EXPERIMENT.md`](docs/SIP_OBSERVABILITY_EXPERIMENT.md) for the A-B-A procedure, naming rules, extraction, and validity checks.
+Raw SIP evidence remains in app-private storage. `Stop & export` writes a sanitized research directory beside the normal session export. See [`docs/LOCAL_DATABASE_PRECISION_PLAN.md`](docs/LOCAL_DATABASE_PRECISION_PLAN.md) for the current local/probe database comparison and [`docs/SIP_OBSERVABILITY_EXPERIMENT.md`](docs/SIP_OBSERVABILITY_EXPERIMENT.md) for capture extraction and validity checks.
+
+The research export includes `native/sip_messages.sanitized.jsonl`: complete SIP messages reconstructed from raw TCP sequence positions before redaction. Each message links its contributing packet records and records first-byte and completion times. Packet records remain in `native/sip_capture.sanitized.jsonl` (and rotation files); unresolved fragment text is excluded. Analyze complete headers and SDP bodies using the message file. Message output follows stream finalization order; sort by its timestamps when combining streams.
+
+Export reports warnings for missing/empty native files, copy/context failures, sanitization errors, recorder drops, incomplete messages, TCP gaps/conflicts and native packet-quality issues. Manifest version 2 retains these under `captureWarnings` and `sipMessageReassembly`. Missing UDP fragments cannot be reconstructed from the saved fragment alone; their incompleteness remains visible. An empty warning list does not establish capture completeness.
+
+If the session JSON export fails, keep the app open and tap **Stop & export** again. The retry retains the original research-export result and warnings for that session.
 
 The follow-up [cell sequence study](docs/CELL_SEQUENCE_STUDY.md) measures what one cell per attempt and the sequence of attempts reveal. Its offline tools report stationary false-change controls and score empirical one-cell areas on separate-day target GPS. Private captures and per-attempt locations remain ignored under `captures/`.
